@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0a18">
+<title>推币机 · Coin Pusher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <div class="cab">
+    <header class="hud">
+      <div class="brand">
+        <span class="logo">PUSH</span>
+        <span class="sub">推币机</span>
+      </div>
+      <div class="purse">
+        <div class="cur" title="金币"><span class="ic coin">◎</span><b id="vCoin">0</b></div>
+        <div class="cur" title="钻石"><span class="ic gem">◆</span><b id="vGem">0</b></div>
+        <div class="cur" title="抽奖券"><span class="ic tix">✚</span><b id="vTix">0</b></div>
+      </div>
+      <div class="hud-actions">
+        <button type="button" id="btnShop" class="ico">商店</button>
+        <button type="button" id="btnAch" class="ico">成就</button>
+        <button type="button" id="btnStat" class="ico">统计</button>
+        <button type="button" id="btnMute" class="ico" aria-pressed="false" title="音效开关">🔊</button>
+      </div>
+    </header>
+
+    <div class="stage">
+      <canvas id="cv" width="480" height="580" aria-label="推币机台面，点击或按空格投币"></canvas>
+      <div class="fx-layer" aria-hidden="true">
+        <div class="combo" id="comboBadge"></div>
+        <div class="jackpot" id="jackpotFx"></div>
+      </div>
+      <div class="stage-note" id="stageNote">点击台面投币 · 空格也行</div>
+    </div>
+
+    <footer class="pad">
+      <button type="button" id="btnDrop" class="big">
+        <span>投币</span><kbd>空格</kbd>
+      </button>
+      <button type="button" id="btnAuto" class="wide" aria-pressed="false">
+        自动投币 <span id="autoLv" class="tag">关</span>
+      </button>
+      <button type="button" id="btnLottery" class="wide">
+        抽奖 <span id="tixLeft" class="tag">0/5</span>
+      </button>
+    </footer>
+
+    <div class="ticker" id="ticker" role="status" aria-live="polite"></div>
+  </div>
+
+  <aside class="log" id="log" aria-live="polite" aria-label="事件记录"></aside>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <h2 id="modalTitle">面板</h2>
+      <button type="button" id="btnClose" class="ico" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script src="js/physics.js"></script>
+<script src="js/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/fx.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
