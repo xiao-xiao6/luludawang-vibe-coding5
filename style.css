@@ -31,15 +31,19 @@ body{
     var(--bg);
   min-height:100%;
   -webkit-tap-highlight-color:transparent;
+  -webkit-text-size-adjust:100%;
+  text-size-adjust:100%;
+  overflow-x:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 .app{
   display:grid;
-  grid-template-columns:minmax(320px,520px) minmax(0,300px);
-  gap:18px;
+  grid-template-columns:var(--cab-w,520px) var(--log-w,300px);
+  gap:var(--gap,18px);
   align-items:start;
   justify-content:center;
-  padding:18px;
+  padding:var(--page-pad,18px);
   max-width:960px;
   margin:0 auto;
 }
@@ -84,7 +88,7 @@ body{
 .ic.gem{color:var(--cyan)}
 .ic.tix{color:var(--green)}
 
-.hud-actions{display:flex;gap:6px;width:100%;justify-content:flex-end}
+.hud-actions{display:flex;gap:6px;width:100%;justify-content:flex-end;flex-wrap:wrap}
 
 button{font:inherit;color:inherit;cursor:pointer}
 .ico{
@@ -101,6 +105,9 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* ---------------- 台面 ---------------- */
 .stage{
   position:relative;
+  width:var(--stage-w,496px);
+  max-width:100%;
+  margin:0 auto;
   border-radius:var(--r);
   overflow:hidden;
   background:#07060f;
@@ -112,7 +119,7 @@ button{font:inherit;color:inherit;cursor:pointer}
   width:100%;
   height:auto;
   aspect-ratio:480/580;
-  touch-action:manipulation;
+  touch-action:none;
   cursor:crosshair;
 }
 .fx-layer{position:absolute;inset:0;pointer-events:none;display:grid;place-items:center}
@@ -187,11 +194,13 @@ kbd{
 
 /* ---------------- 日志 ---------------- */
 .log{
+  width:var(--log-w,300px);
   background:linear-gradient(180deg,#171334,#120f28);
   border:1px solid var(--line);border-radius:var(--r);
   padding:10px;height:min(78vh,720px);overflow:auto;
   font-size:12.5px;line-height:1.55;
   box-shadow:var(--shadow);
+  overscroll-behavior:contain;
 }
 .log h3{
   margin:0 0 8px;font-size:12px;letter-spacing:2px;color:var(--dim);
@@ -213,7 +222,7 @@ kbd{
 
 /* ---------------- Toast ---------------- */
 .toasts{
-  position:fixed;left:50%;top:14px;transform:translateX(-50%);
+  position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translateX(-50%);
   display:flex;flex-direction:column;gap:8px;z-index:60;
   pointer-events:none;width:min(92vw,420px);
 }
@@ -235,11 +244,12 @@ kbd{
 .overlay{
   position:fixed;inset:0;z-index:80;
   background:rgba(6,5,16,.72);backdrop-filter:blur(3px);
-  display:grid;place-items:center;padding:16px;
+  display:grid;place-items:center;
+  padding:calc(16px + env(safe-area-inset-top,0px)) calc(16px + env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) calc(16px + env(safe-area-inset-left,0px));
 }
 .overlay[hidden]{display:none}
 .modal{
-  width:min(560px,94vw);max-height:86vh;display:flex;flex-direction:column;
+  width:min(560px,94vw);max-height:86vh;max-height:86dvh;display:flex;flex-direction:column;
   background:linear-gradient(180deg,#221b46,#151130);
   border:1px solid #4b3f8f;border-radius:18px;
   box-shadow:var(--shadow),0 0 40px rgba(78,226,255,.12);
@@ -299,17 +309,78 @@ kbd{
   background:linear-gradient(180deg,#7a2b3d,#4d1725)!important;
 }
 
-/* ---------------- 响应式 ---------------- */
-@media (max-width:860px){
-  .app{grid-template-columns:minmax(0,520px);padding:10px;gap:10px}
-  .log{height:auto;max-height:220px}
+/* ---------------- 双端适配 ---------------- */
+/* JS 把方案写成 body[data-mode] 与 CSS 变量，样式只负责落地：
+   wide 桌面/平板横屏 · stack 平板竖屏 · narrow 小屏手机 · compact 手机横屏 */
+:root{
+  --stage-w:496px;
+  --cab-w:520px;
+  --log-w:300px;
+  --gap:18px;
+  --page-pad:18px;
 }
-@media (max-width:420px){
-  .pad{grid-template-columns:1fr 1fr}
-  .pad .big{grid-column:1/-1}
-  .logo{font-size:16px}
-  .cur{padding:3px 8px}
-  .hud-actions .ico{padding:5px 8px;font-size:11px}
+body[data-mode="stack"]{--page-pad:10px;--gap:10px}
+body[data-mode="narrow"]{--page-pad:10px;--gap:10px}
+body[data-mode="compact"]{--page-pad:8px;--gap:8px}
+
+/* 日志的三种归宿：col 右侧独立列 · below 折到机柜下方 · off 完全收起 */
+body[data-log="below"] .app{grid-template-columns:var(--cab-w,520px)}
+body[data-log="below"] .log{width:auto;height:auto;max-height:240px}
+body[data-log="off"] .app{grid-template-columns:var(--cab-w,520px)}
+body[data-log="off"] .log{display:none}
+
+/* 小屏手机：日志折到下方时再矮一点，别把台面顶出屏幕 */
+body[data-mode="narrow"] .log{max-height:200px}
+
+/* 小屏手机：操作区两行，投币键独占一行更好按 */
+body[data-mode="narrow"] .pad{grid-template-columns:1fr 1fr}
+body[data-mode="narrow"] .pad .big{grid-column:1/-1}
+body[data-mode="narrow"] .logo{font-size:16px}
+body[data-mode="narrow"] .cur{padding:3px 8px}
+
+/* 手机横屏 / 矮窗口：台面在左，HUD 与操作在右，纵向空间全给台面 */
+body[data-mode="compact"] .cab{
+  display:grid;
+  grid-template-columns:var(--stage-w,270px) minmax(0,1fr);
+  grid-template-areas:"stage hud" "stage pad" "stage tick";
+  gap:8px;
+  align-content:start;
+}
+body[data-mode="compact"] .stage{grid-area:stage;align-self:start;margin:0}
+body[data-mode="compact"] .brand{display:none}   /* 横屏空间金贵，品牌让位给按钮 */
+body[data-mode="compact"] kbd{display:none}      /* 手机没有空格键，快捷键提示收掉 */
+body[data-mode="compact"] .hud{
+  grid-area:hud;flex-direction:column;align-items:stretch;
+  gap:5px;margin-bottom:0;
+}
+body[data-mode="compact"] .purse{margin-left:0;gap:4px;justify-content:flex-start}
+body[data-mode="compact"] .cur{padding:2px 7px;font-size:12px}
+body[data-mode="compact"] .hud-actions{justify-content:flex-start;gap:5px}
+body[data-mode="compact"] .pad{grid-area:pad;grid-template-columns:1fr;gap:6px;margin-top:0}
+body[data-mode="compact"] .pad .big{grid-column:auto}
+body[data-mode="compact"] .pad button{min-height:44px;padding:8px 6px;font-size:13px}
+body[data-mode="compact"] .ticker{grid-area:tick;margin-top:0;text-align:left;font-size:11.5px}
+body[data-mode="compact"] .log{height:auto;max-height:calc(100vh - 16px)}
+
+/* 超矮横屏（如 320px 高）：再砍掉状态条，保住台面和按钮 */
+@media (max-height:380px){
+  body[data-mode="compact"] .ticker{display:none}
+  body[data-mode="compact"] .pad button{min-height:40px}
+}
+
+/* 触屏设备：按钮一律达到 44px 最小可点尺寸 */
+@media (pointer:coarse){
+  .ico{min-height:44px;min-width:44px;padding:8px 10px;font-size:13px}
+  .pad button{min-height:52px;font-size:15px}
+  .card button{min-height:44px;padding:10px 14px}
+  .ach-row{padding:12px 10px}
+  .modal-head{padding:12px 14px}
+}
+
+/* 矮视口：弹窗别顶到边，滚动区自己撑 */
+@media (max-height:560px){
+  .modal{max-height:92vh;max-height:92dvh;width:min(680px,94vw)}
+  .modal-body{padding:10px 14px}
 }
 
 /* ---------------- 无障碍：减弱动效 ---------------- */

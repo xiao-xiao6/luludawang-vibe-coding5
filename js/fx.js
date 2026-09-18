@@ -12,6 +12,9 @@
     shake: 0,
     reduce: !!(reduceQuery && reduceQuery.matches),
     quality: 1,
+    maxParts: 420,
+    particles: true,
+    shadows: true,
 
     init() {
       if (reduceQuery && reduceQuery.addEventListener) {
@@ -21,8 +24,18 @@
       this.quality = mem <= 2 ? 0.5 : 1;
     },
 
+    // 适配内核下发的性能档位：低端机降粒子/降上限，桌面保持全特效
+    apply(perf) {
+      if (!perf) return;
+      if (typeof perf.quality === "number") this.quality = perf.quality;
+      if (typeof perf.maxParts === "number") this.maxParts = perf.maxParts;
+      this.particles = perf.particles !== false;
+      this.shadows = perf.shadows !== false;
+      if (this.parts.length > this.maxParts) this.parts.splice(0, this.parts.length - this.maxParts);
+    },
+
     burst(x, y, color, n, spread, speed) {
-      if (this.reduce) return;
+      if (this.reduce || !this.particles) return;
       n = Math.round((n || 12) * this.quality);
       spread = spread == null ? Math.PI * 2 : spread;
       speed = speed || 170;
@@ -39,11 +52,11 @@
           color: color
         });
       }
-      if (this.parts.length > 420) this.parts.splice(0, this.parts.length - 420);
+      if (this.parts.length > this.maxParts) this.parts.splice(0, this.parts.length - this.maxParts);
     },
 
     ring(x, y, color) {
-      if (this.reduce) return;
+      if (this.reduce || !this.particles) return;
       this.parts.push({ ring: true, x: x, y: y, r: 6, life: 0.5, max: 0.5, color: color });
     },
 

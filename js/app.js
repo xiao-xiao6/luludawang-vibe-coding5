@@ -5,6 +5,7 @@
   "use strict";
 
   const D = window.CPData, E = window.CPEngine, Fx = window.CPFx, Sfx = window.CPSfx;
+  const L = window.CPLayout;
 
   const cv = document.getElementById("cv");
   const ctx = cv.getContext("2d");
@@ -24,7 +25,7 @@
     const pad = 4;
     const r = def.r;
     const size = Math.ceil((r + pad) * 2);
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = spriteDpr;
     const c = document.createElement("canvas");
     c.width = c.height = Math.ceil(size * dpr);
     const g = c.getContext("2d");
@@ -294,11 +295,77 @@
   const btnMute = $("btnMute");
 
   let dpr = 1;
+  let spriteDpr = Math.min(2, window.devicePixelRatio || 1);
+  let mode = "wide";
+
+  // 安全区（刘海 / 底部指示条）：用一个隐藏探针实测，比读自定义属性可靠
+  let safeProbe = null;
+  function safeInsets() {
+    try {
+      if (!safeProbe) {
+        safeProbe = document.createElement("div");
+        safeProbe.setAttribute("aria-hidden", "true");
+        safeProbe.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;" +
+          "padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)";
+        document.body.appendChild(safeProbe);
+      }
+      const cs = getComputedStyle(safeProbe);
+      return {
+        top: parseFloat(cs.paddingTop) || 0,
+        right: parseFloat(cs.paddingRight) || 0,
+        bottom: parseFloat(cs.paddingBottom) || 0,
+        left: parseFloat(cs.paddingLeft) || 0
+      };
+    } catch (e) {
+      return { top: 0, right: 0, bottom: 0, left: 0 };
+    }
+  }
+
+  // 双端适配总入口：视口分级 → 台面尺寸 → 高清档位 → 性能档位
   function fit() {
-    dpr = Math.min(2, window.devicePixelRatio || 1);
-    cv.width = Math.round(W * dpr);
-    cv.height = Math.round(H * dpr);
+    const vw = window.innerWidth || W;
+    const vh = window.innerHeight || H;
+    const ins = safeInsets();
+    const p = L.plan({
+      vw: vw, vh: vh,
+      dpr: window.devicePixelRatio || 1,
+      safeTop: ins.top, safeBottom: ins.bottom,
+      safeLeft: ins.left, safeRight: ins.right,
+      deviceMemory: navigator.deviceMemory,
+      cores: navigator.hardwareConcurrency
+    });
+
+    mode = p.mode;
+    dpr = p.dpr;
+    document.body.dataset.mode = p.mode;
+    document.body.dataset.log = p.logMode;
+    const rs = document.documentElement.style;
+    rs.setProperty("--stage-w", p.stage.w + "px");
+    rs.setProperty("--cab-w", p.cabWidth + "px");
+    rs.setProperty("--log-w", p.logWidth + "px");
+    rs.setProperty("--safe-top", ins.top + "px");
+    rs.setProperty("--safe-right", ins.right + "px");
+    rs.setProperty("--safe-bottom", ins.bottom + "px");
+    rs.setProperty("--safe-left", ins.left + "px");
+
+    Fx.apply(p.perf);
+
+    // 高清档位变了就重烘焙币精灵，避免糊边
+    if (dpr !== spriteDpr) {
+      spriteDpr = dpr;
+      for (const k in sprites) delete sprites[k];
+    }
+
+    const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+    if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // 触屏端没有空格键，提示语要换
+    if (elStageNote) {
+      elStageNote.textContent = (p.mode === "narrow" || p.mode === "compact")
+        ? "点台面投币 · 拖动可瞄准" : "点击台面投币 · 空格也行";
+    }
+    if (game) render();
   }
 
   const logs = [];
@@ -473,6 +540,7 @@
     hasHover = true;
   });
   cv.addEventListener("pointerleave", () => { hasHover = false; });
+  cv.addEventListener("pointercancel", () => { hasHover = false; });
   cv.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     hoverX = canvasX(e.clientX);
@@ -681,6 +749,8 @@
     ticker("点击台面投币 · 空格也行", false);
 
     window.addEventListener("resize", fit);
+    window.addEventListener("orientationchange", fit);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", fit);
     window.addEventListener("pagehide", () => game.save());
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) { game.save(); Sfx.toggle(false); }
@@ -688,7 +758,7 @@
     });
 
     // 调试钩子
-    window.__CP = { game: game, Fx: Fx, Sfx: Sfx, render: render };
+    window.__CP = { game: game, Fx: Fx, Sfx: Sfx, render: render, layout: L, fit: fit, modeOf: () => mode };
 
     requestAnimationFrame(frame);
   }
