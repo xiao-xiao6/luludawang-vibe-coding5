@@ -61,6 +61,7 @@
     },
 
     text(x, y, str, color, size) {
+      if (str == null || str === "") return;
       this.texts.push({ x: x, y: y, str: str, color: color || "#ffe9a8", life: 1.0, max: 1.0, size: size || 15 });
       if (this.texts.length > 60) this.texts.splice(0, this.texts.length - 60);
     },
@@ -130,14 +131,34 @@
     clear() { this.parts.length = 0; this.texts.length = 0; this.shake = 0; }
   };
 
-  /* ---------------- 程序化音效 ---------------- */
+  /* ---------------- 程序化音效 ----------------
+   * soundOn 是唯一真源：按钮状态、aria-pressed、静音判定全部读它。
+   * 切走标签页只 suspend 音频上下文，绝不改 soundOn ——
+   * 这样切回来音效还在，不会出现"永久静音但按钮还挂着 🔊"。
+   */
   const Sfx = {
     ac: null,
-    muted: false,
+    soundOn: true,
     master: null,
 
+    isOn() { return this.soundOn; },
+
+    setOn(on) {
+      this.soundOn = !!on;
+      if (this.soundOn) this.ensure();
+      else this.suspend();
+    },
+
+    /** 只挂起音频上下文，不动开关状态 */
+    suspend() {
+      if (this.ac) { try { this.ac.suspend(); } catch (e) { /* ignore */ } }
+    },
+    resume() {
+      if (this.soundOn && this.ac) { try { this.ac.resume(); } catch (e) { /* ignore */ } }
+    },
+
     ensure() {
-      if (this.muted) return null;
+      if (!this.soundOn) return null;
       if (!this.ac) {
         const AC = root.AudioContext || root.webkitAudioContext;
         if (!AC) return null;
@@ -186,22 +207,26 @@
     },
 
     insert() { this.noise(0.06, 0.22, 2600); this.blip(660, 0.05, "square", 0.16, 880); },
+
+    /* 连击音高按对数阶梯上行：1→0, 2→2, 4→4, 8→6, 16→8, 32→10, 64+→11
+     * 比原来的"线性 +1"更能撑住高连击，也不会一过 11 就永远是最高音。 */
     pay(combo) {
-      const step = Math.min(11, Math.max(0, (combo || 1) - 1));
+      const c = Math.max(1, combo || 1);
+      const step = Math.min(11, Math.round(Math.log2(c) * 2));
       const f = 720 * Math.pow(1.0595, step * 2);
       this.blip(f, 0.12, "triangle", 0.34, f * 1.5);
       this.blip(f * 2, 0.07, "sine", 0.14);
     },
-    big() { this.blip(300, 0.5, "sawtooth", 0.2, 90); this.noise(0.4, 0.3, 700); },
+
     jackpot() {
       const notes = [523, 659, 784, 1046, 1318];
       notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.22, "triangle", 0.36), i * 85));
       setTimeout(() => this.noise(0.5, 0.28, 1800), 300);
     },
+
     gutter() { this.blip(180, 0.16, "sine", 0.22, 90); },
     buy() { this.blip(880, 0.09, "square", 0.22, 1180); setTimeout(() => this.blip(1320, 0.1, "sine", 0.18), 70); },
-    deny() { this.blip(200, 0.14, "square", 0.18, 130); },
-    toggle(on) { this.muted = !on; if (!on && this.ac) { try { this.ac.suspend(); } catch (e) { /* ignore */ } } }
+    deny() { this.blip(200, 0.14, "square", 0.18, 130); }
   };
 
   root.CPFx = Fx;

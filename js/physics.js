@@ -2,6 +2,9 @@
  * 推币机物理内核 —— 纯逻辑，零 DOM 依赖，可 headless 跑测试
  * 俯视视角：y 轴朝"玩家方向"，推板在 y 小的一端往复，币被推向 payoutY 前沿。
  * 掉出前沿 = 奖励；从左右两个角沟掉下去 = 丢币。
+ *
+ * 随机源可注入（cfg.rng），默认 Math.random：
+ * 注入可播种 RNG 后，同一份种子跑出的每一局都完全一致，测试可复现。
  * ============================================================ */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
@@ -11,13 +14,14 @@
 
   const TAU = Math.PI * 2;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-  const rand = (a, b) => a + Math.random() * (b - a);
+  const rand = (a, b, rng) => a + (rng || Math.random)() * (b - a);
 
   let UID = 1;
 
   /* ---------------- 币 ---------------- */
   class Coin {
-    constructor(x, y, def) {
+    constructor(x, y, def, rng) {
+      const r = typeof rng === "function" ? rng : Math.random;
       this.id = UID++;
       this.x = x;
       this.y = y;
@@ -27,8 +31,8 @@
       this.mass = def.mass || 1;
       this.def = def;
       this.kind = def.id;
-      this.rot = rand(0, TAU);
-      this.spin = rand(-3, 3);
+      this.rot = rand(0, TAU, r);
+      this.spin = rand(-3, 3, r);
       this.age = 0;
       this.squash = 0.35;   // 出生缩放动画
       this.spark = 0;       // 视觉高光计时
@@ -50,7 +54,7 @@
       this.plateDepth = cfg.plateDepth != null ? cfg.plateDepth : 92;
       this.plateMinY = cfg.plateMinY != null ? cfg.plateMinY : 118;
       this.plateMaxY = cfg.plateMaxY != null ? cfg.plateMaxY : 250;
-      this.maxCoins = cfg.maxCoins != null ? cfg.maxCoins : 260;
+      this.maxCoins = cfg.maxCoins != null ? cfg.maxCoins : 200;
       this.iterations = cfg.iterations != null ? cfg.iterations : 10;
       this.omega = cfg.omega != null ? cfg.omega : 1.35;      // 推板角速度（rad/s）
       this.baseFriction = cfg.baseFriction != null ? cfg.baseFriction : 3.6;
@@ -62,15 +66,16 @@
       this.reachMul = 1;    // 推板行程
       this.frictionMul = 1; // 摩擦（越小越滑）
       this.railMul = 1;     // 护栏（越大角沟越窄）
+      this.magnet = 0;      // 磁力线圈等级：在求解器内部施加真实横向力
 
       this.plate = { y: this.plateMinY, vy: 0, minY: this.plateMinY, maxY: this.plateMaxY, depth: this.plateDepth };
       this.phase = 0;
       this.time = 0;
       this.coins = [];
       this.events = [];
-      this.stats = { dropped: 0, paid: 0, lost: 0, peak: 0, maxSpeed: 0, stress: 0 };
+      this.stats = { dropped: 0, paid: 0, lost: 0, peak: 0, stress: 0, stressPeak: 0 };
       this._bucket = new Map();
-      this.rng = Math.random;
+      this.rng = typeof cfg.rng === "function" ? cfg.rng : Math.random;
     }
 
     get plateMaxReach() {
@@ -93,7 +98,7 @@
       const z = this.dropZone;
       const cx = clamp(x != null ? x : this.W / 2, def.r + 6, this.W - def.r - 6);
       const cy = opts.y != null ? opts.y : z.y0 + this.rng() * (z.y1 - z.y0);
-      const c = new Coin(cx, cy, def);
+      const c = new Coin(cx, cy, def, this.rng);
       c.vx = opts.vx != null ? opts.vx : (this.rng() - 0.5) * 46;
       c.vy = opts.vy != null ? opts.vy : 52 + this.rng() * 62;
       c.spark = 1;
@@ -103,7 +108,9 @@
       return c;
     }
 
-    /* 一次性撒一堆币（Jackpot 奖励用） */
+    /* 一次性撒一堆币（Jackpot / 抽奖雨）。
+     * 返回真正落地的币；台面满时返回的数组会短于 n，
+     * 调用方负责把差额折算成金币返还给玩家（见 engine.dropManyOrRefund）。 */
     dropMany(def, n, xs) {
       const made = [];
       for (let i = 0; i < n; i++) {
@@ -114,19 +121,33 @@
       return made;
     }
 
-    clear() { this.coins.length = 0; }
+    resetStats() {
+      this.stats = { dropped: 0, paid: 0, lost: 0, peak: 0, stress: 0, stressPeak: 0 };
+    }
+    clear() {
+      this.coins.length = 0;
+      this.events.length = 0;
+      this.resetStats();
+    }
 
-    /* 单个物理步（固定步长调用） */
-    step(dt) {
+    /* 单个物理步（固定步长调用）
+     * opts.freezePlate = true 时推板停在原地（"暂停推板"用），
+     * 台面上的币仍然继续求解，不会卡住。 */
+    step(dt, opts) {
       if (!(dt > 0)) return;
+      const freeze = !!(opts && opts.freezePlate);
       this.time += dt;
 
       const p = this.plate;
-      const prevY = p.y;
-      this.phase += dt * this.omega * this.speedMul;
-      const s = 0.5 - 0.5 * Math.cos(this.phase);
-      p.y = p.minY + (p.maxY - p.minY) * this.reachMul * s;
-      p.vy = (p.y - prevY) / dt;
+      if (freeze) {
+        p.vy = 0;
+      } else {
+        const prevY = p.y;
+        this.phase += dt * this.omega * this.speedMul;
+        const s = 0.5 - 0.5 * Math.cos(this.phase);
+        p.y = p.minY + (p.maxY - p.minY) * this.reachMul * s;
+        p.vy = (p.y - prevY) / dt;
+      }
 
       const damp = Math.exp(-this.baseFriction * this.frictionMul * dt);
       const spinDamp = Math.exp(-3 * dt);
@@ -136,6 +157,13 @@
         const c = coins[i];
         c.age += dt;
         c.vy += this.gravity * dt;
+        /* 磁力线圈：在积分阶段施加真实力（和碰撞求解同一套体系），
+         * 不是事后硬改坐标，所以不会出现"币被推着穿过别的币"的观感。 */
+        if (this.magnet > 0 && c.y > this.payoutY - 190) {
+          const gw = this.gutterWidth;
+          if (c.x < gw + c.r * 2.2) c.vx += this.magnet * 46 * dt;
+          else if (c.x > this.W - gw - c.r * 2.2) c.vx -= this.magnet * 46 * dt;
+        }
         c.x += c.vx * dt;
         c.y += c.vy * dt;
         c.vx *= damp;
@@ -155,6 +183,8 @@
         this._solveWalls();
       }
 
+      // 挤压强度会随时间回落，只留峰值做统计
+      this.stats.stress *= Math.exp(-2.5 * dt);
       this._cull();
       if (this.coins.length > this.stats.peak) this.stats.peak = this.coins.length;
     }
@@ -231,6 +261,7 @@
           const pen = lim - c.y;
           if (pen > c.stress) c.stress = pen;
           if (pen > this.stats.stress) this.stats.stress = pen;
+          if (pen > this.stats.stressPeak) this.stats.stressPeak = pen;
           c.y = lim;
           if (c.vy < pv) c.vy = pv;
         }
@@ -249,17 +280,15 @@
       }
     }
 
-    /* ---- 结算：掉出前沿 ---- */
+    /* ---- 结算：掉出前沿 / 掉进角沟 ---- */
     _cull() {
       const coins = this.coins;
       let removed = null;
       const gw = this.gutterWidth;
       for (let i = 0; i < coins.length; i++) {
         const c = coins[i];
-        let reason = null;
-        if (c.y > this.payoutY) reason = (c.x < gw || c.x > this.W - gw) ? "gutter" : "payout";
-        else if (c.x < -c.r * 2 || c.x > this.W + c.r * 2) reason = "gutter";
-        if (!reason) continue;
+        if (c.y <= this.payoutY) continue;
+        const reason = (c.x < gw || c.x > this.W - gw) ? "gutter" : "payout";
         c.dead = true;
         c.reason = reason;
         if (reason === "payout") this.stats.paid++; else this.stats.lost++;
@@ -308,23 +337,39 @@
       return worst;
     }
 
+    /* 存档：上限跟随 maxCoins（扩容槽升到多少就存多少），
+     * 不再有 200 / 220 两个互相打架的魔数。 */
     serialize(limit) {
+      const cap = limit == null ? this.maxCoins : limit;
       const out = [];
-      const n = Math.min(this.coins.length, limit || 200);
+      const n = Math.min(this.coins.length, Math.max(0, cap));
       for (let i = 0; i < n; i++) {
         const c = this.coins[i];
-        out.push([c.kind, Math.round(c.x * 10) / 10, Math.round(c.y * 10) / 10]);
+        out.push([
+          c.kind,
+          Math.round(c.x * 10) / 10,
+          Math.round(c.y * 10) / 10,
+          Math.round(c.rot * 100) / 100
+        ]);
       }
       return out;
     }
 
     restore(list, defs) {
       this.coins.length = 0;
-      if (!list) return;
-      for (const row of list) {
+      if (!list || !list.length) return;
+      const cap = this.maxCoins;
+      for (let i = 0; i < list.length; i++) {
+        if (this.coins.length >= cap) break;
+        const row = list[i];
+        if (!row || typeof row[0] !== "string") continue;
         const def = defs[row[0]];
         if (!def) continue;
-        const c = new Coin(clamp(row[1], def.r, this.W - def.r), clamp(row[2], def.r, this.payoutY - 4), def);
+        const x = Number(row[1]), y = Number(row[2]);
+        if (!isFinite(x) || !isFinite(y)) continue;
+        const c = new Coin(clamp(x, def.r, this.W - def.r), clamp(y, def.r, this.payoutY - 4), def, this.rng);
+        const rot = Number(row[3]);
+        if (isFinite(rot)) c.rot = rot;
         c.squash = 1;
         this.coins.push(c);
       }

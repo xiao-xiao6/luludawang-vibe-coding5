@@ -77,11 +77,14 @@
     return Math.max(240, Math.min(cap, w));
   }
 
-  /* ---------------- 机柜里非台面部分的纵向占用 ---------------- */
+  /* ---------------- 机柜里非台面部分的纵向占用 ----------------
+   * 注意：**不包含安全区**。上下安全区由 plan() 从可用高度里扣一次，
+   * CSS 只负责把内容摆进安全区内 —— 同一份刘海空间只扣一次，
+   * 不会出现“刘海屏上台面比实际可用空间还小”的重复扣除（M7）。 */
   function chromeFor(mode, o) {
     o = o || {};
     const base = CHROME[mode] == null ? 212 : CHROME[mode];
-    return base + (o.safeTop || 0) + (o.safeBottom || 0) + (o.extra || 0);
+    return base + (o.extra || 0);
   }
 
   /* ---------------- 台面显示尺寸 ---------------- */
@@ -138,8 +141,8 @@
     o = o || {};
     const rawW = Math.max(1, o.vw || 1);
     const rawH = Math.max(1, o.vh || 1);
-    const vw = Math.max(1, rawW - (o.safeLeft || 0) - (o.safeRight || 0));  // 左右安全区占掉的横向空间
-    const vh = rawH;
+    const vw = Math.max(1, rawW - (o.safeLeft || 0) - (o.safeRight || 0));  // 左右安全区：只在这里扣一次
+    const vh = Math.max(1, rawH - (o.safeTop || 0) - (o.safeBottom || 0));  // 上下安全区：同样只扣一次
     const mode = o.mode || pickMode(rawW, rawH);   // 横竖屏看物理视口，不看被安全区压缩后的宽度
     const pad = PAGE_PAD[mode] == null ? 18 : PAGE_PAD[mode];
     const chrome = o.chrome == null ? chromeFor(mode, o) : o.chrome;

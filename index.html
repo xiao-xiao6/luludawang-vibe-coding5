@@ -21,10 +21,21 @@
         <div class="cur" title="抽奖券"><span class="ic tix">✚</span><b id="vTix">0</b></div>
       </div>
       <div class="hud-actions">
-        <button type="button" id="btnShop" class="ico">商店</button>
-        <button type="button" id="btnAch" class="ico">成就</button>
-        <button type="button" id="btnStat" class="ico">统计</button>
-        <button type="button" id="btnMute" class="ico" aria-pressed="false" title="音效开关">🔊</button>
+        <div class="hud-left">
+          <div class="cap ok" id="cap" title="台面容量">
+            <span class="cap-label">台面</span>
+            <span class="cap-bar"><i id="capFill"></i></span>
+            <span class="cap-text" id="capText">0/260</span>
+          </div>
+          <button type="button" id="btnPause" class="ico" aria-pressed="false" title="暂停/继续推板（快捷键 P）">⏸ 暂停</button>
+        </div>
+        <div class="hud-right">
+          <button type="button" id="btnBailout" class="ico bail" hidden>🪙 领救济金 +30</button>
+          <button type="button" id="btnShop" class="ico">商店</button>
+          <button type="button" id="btnAch" class="ico">成就</button>
+          <button type="button" id="btnStat" class="ico">统计</button>
+          <button type="button" id="btnMute" class="ico" aria-pressed="true" title="音效已开启，点击静音">🔊 音效</button>
+        </div>
       </div>
     </header>
 
@@ -41,7 +52,7 @@
       <button type="button" id="btnDrop" class="big">
         <span>投币</span><kbd>空格</kbd>
       </button>
-      <button type="button" id="btnAuto" class="wide" aria-pressed="false">
+      <button type="button" id="btnAuto" class="wide" aria-pressed="false" title="需先在商店购买「自动投币机」">
         自动投币 <span id="autoLv" class="tag">关</span>
       </button>
       <button type="button" id="btnLottery" class="wide">
@@ -52,7 +63,10 @@
     <div class="ticker" id="ticker" role="status" aria-live="polite"></div>
   </div>
 
-  <aside class="log" id="log" aria-live="polite" aria-label="事件记录"></aside>
+  <aside class="log" id="log" aria-label="事件记录">
+    <h3>Event Log</h3>
+    <ul id="logList" aria-live="polite"></ul>
+  </aside>
 </div>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
