@@ -16,6 +16,14 @@
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const rand = (a, b, rng) => a + (rng || Math.random)() * (b - a);
 
+  /* ---------------- 2.5D：币的「离台高度」 ----------------
+   * z 是纯视觉量：只影响绘制位置与缩放，不参与任何碰撞与结算。
+   * 物理内核仍然是干净的 2D 俯视，平衡测试的数字不会被它污染。
+   * 空中币会暂时退出币与币的求解，所以「投下来砸进币堆」是真的会推开别的币。 */
+  const AIR_GRAVITY = 1500;   // 下落加速度 px/s²
+  const AIR_MIN = 46;         // 最低投币高度
+  const AIR_MAX = 92;         // 最高投币高度
+
   let UID = 1;
 
   /* ---------------- 币 ---------------- */
@@ -37,6 +45,11 @@
       this.squash = 0.35;   // 出生缩放动画
       this.spark = 0;       // 视觉高光计时
       this.stress = 0;      // 被推板挤压的程度（给特效看）
+      this.z = 0;           // 离台高度（2.5D 纯视觉）
+      this.vz = 0;          // 垂直速度（向上为正）
+      this.air = false;     // 是否还在空中（空中不参与币与币碰撞）
+      this.bounces = 0;     // 已弹跳次数
+      this.landFx = 0;      // 落台特效计时（给渲染/音效消费）
       this.dead = false;
       this.reason = null;   // 'payout' | 'gutter'
     }
@@ -67,6 +80,9 @@
       this.frictionMul = 1; // 摩擦（越小越滑）
       this.railMul = 1;     // 护栏（越大角沟越窄）
       this.magnet = 0;      // 磁力线圈等级：在求解器内部施加真实横向力
+      this.congestMul = 1;  // 拥堵系数（台面越满推板越慢）
+      this.hotMul = 1;      // 超频 / 过热系数
+      this.streakMul = 1;   // 漏币连锁：角沟临时变宽
 
       this.plate = { y: this.plateMinY, vy: 0, minY: this.plateMinY, maxY: this.plateMaxY, depth: this.plateDepth };
       this.phase = 0;
@@ -82,7 +98,7 @@
       return this.plateMinY + (this.plateMaxY - this.plateMinY) * this.reachMul;
     }
     get gutterWidth() {
-      return Math.max(6, this.gutterW / this.railMul);
+      return Math.max(6, this.gutterW * this.streakMul / this.railMul);
     }
     /** 投币落点区间（推板最远端前方一小段） */
     get dropZone() {
@@ -102,6 +118,10 @@
       c.vx = opts.vx != null ? opts.vx : (this.rng() - 0.5) * 46;
       c.vy = opts.vy != null ? opts.vy : 52 + this.rng() * 62;
       c.spark = 1;
+      // 2.5D：从上方落下（opts.z 可指定高度，Jackpot 撒币会撒得更高）
+      c.z = opts.z != null ? opts.z : AIR_MIN + this.rng() * (AIR_MAX - AIR_MIN);
+      c.vz = opts.vz != null ? opts.vz : 0;
+      c.air = true;
       this.coins.push(c);
       this.stats.dropped++;
       if (this.coins.length > this.stats.peak) this.stats.peak = this.coins.length;
@@ -143,7 +163,7 @@
         p.vy = 0;
       } else {
         const prevY = p.y;
-        this.phase += dt * this.omega * this.speedMul;
+        this.phase += dt * this.omega * this.speedMul * this.congestMul * this.hotMul;
         const s = 0.5 - 0.5 * Math.cos(this.phase);
         p.y = p.minY + (p.maxY - p.minY) * this.reachMul * s;
         p.vy = (p.y - prevY) / dt;
@@ -172,6 +192,25 @@
         if (sp > 700) { const k = 700 / sp; c.vx *= k; c.vy *= k; }
         c.rot += c.spin * dt;
         c.spin *= spinDamp;
+        /* 2.5D 落台：高度只影响观感，不参与碰撞与结算 */
+        if (c.air) {
+          c.vz -= AIR_GRAVITY * dt;
+          c.z += c.vz * dt;
+          if (c.z <= 0) {
+            if (c.vz < -190 && c.bounces < 2) {
+              c.bounces++;
+              c.z = 0;
+              c.vz = -c.vz * 0.26;
+              c.squash = 0.60;
+              if (c.landFx < 0.7) c.landFx = 0.7;
+            } else {
+              c.z = 0; c.vz = 0; c.air = false; c.bounces = 0;
+              c.squash = 0.76;
+              c.landFx = 1;
+            }
+          }
+        }
+        if (c.landFx > 0) c.landFx = Math.max(0, c.landFx - dt * 2.6);
         if (c.squash < 1) c.squash += (1 - c.squash) * grow;
         if (c.spark > 0) c.spark = Math.max(0, c.spark - dt * 1.8);
         c.stress *= Math.exp(-8 * dt);
@@ -226,6 +265,7 @@
     }
 
     _resolve(a, b, applyImpulse) {
+      if (a.air || b.air) return;   // 空中的币不参与币与币求解（落地后再推开币堆）
       const dx = b.x - a.x, dy = b.y - a.y;
       const rr = a.r + b.r;
       const d2 = dx * dx + dy * dy;
@@ -256,6 +296,7 @@
       const coins = this.coins;
       for (let i = 0; i < coins.length; i++) {
         const c = coins[i];
+        if (c.air) continue;          // 空中的币还没落到台面，推板推不到它
         const lim = face + c.r;
         if (c.y < lim) {
           const pen = lim - c.y;
@@ -308,13 +349,18 @@
       return e;
     }
 
-    /** 给测试用：找出严重重叠的一对 */
+    /** 给测试用：找出严重重叠的一对
+     *  口径与 _resolve 对齐 —— 空中的币本来就不参与币与币求解（落地后才推开币堆），
+     *  渲染层也靠 z 把两者错开，所以把它们算进来只会得到一个修不掉的假阳性。 */
     worstOverlap() {
       const coins = this.coins;
       let worst = 0;
       for (let i = 0; i < coins.length; i++) {
+        const a = coins[i];
+        if (a.air) continue;
         for (let j = i + 1; j < coins.length; j++) {
-          const a = coins[i], b = coins[j];
+          const b = coins[j];
+          if (b.air) continue;
           const dx = b.x - a.x, dy = b.y - a.y;
           const rr = a.r + b.r;
           const d2 = dx * dx + dy * dy;

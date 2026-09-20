@@ -38,9 +38,16 @@
       id: "chest", name: "宝箱", glyph: "?", r: 17, mass: 3.2, value: 0, cost: 0, jackpot: 1,
       color: "#a94bdd", color2: "#f2d2ff", ring: "#5a1d7a", glow: "#e39bff",
       rarity: "传说"
+    },
+    /* 金币塔：比宝箱更稀有的传说奖励。推落后会在台面上垒起一座金币塔，
+     * 并且立刻结算一大笔现金 —— 是「看得见的大奖」。 */
+    tower: {
+      id: "tower", name: "金币塔", glyph: "▲", r: 16, mass: 3.0, value: 0, cost: 0, tower: 1,
+      color: "#e8940f", color2: "#ffe9a8", ring: "#7a4a06", glow: "#ffd75e",
+      rarity: "传说"
     }
   };
-  const COIN_ORDER = ["copper", "silver", "gold", "diamond", "lucky", "chest"];
+  const COIN_ORDER = ["copper", "silver", "gold", "diamond", "lucky", "chest", "tower"];
 
   /* ---------------- 连击 ----------------
    * 阶梯阈值偏高，让高倍率保持稀有。
@@ -74,7 +81,10 @@
     { id: "multi", name: "投币口", desc: "一次投币 +1 枚", max: 4, base: 90, growth: 1.95, icon: "≡" },
     { id: "auto", name: "自动投币机", desc: "每秒自动投币 +1", max: 6, base: 220, growth: 1.88, icon: "⟳" },
     { id: "luck", name: "幸运石", desc: "机台补给好币更多", max: 6, base: 170, growth: 1.8, icon: "✦" },
-    { id: "cap", name: "扩容槽", desc: "台面容量 +30，补给线同步抬高", max: 4, base: 130, growth: 1.9, icon: "▤" }
+    { id: "cap", name: "扩容槽", desc: "台面容量 +30，补给线同步抬高", max: 4, base: 130, growth: 1.9, icon: "▤" },
+    /* 针对拥堵 / 爆仓这两条惩罚线，给玩家明确的解法 */
+    { id: "vent", name: "排风马达", desc: "拥堵带来的减速 -34%/级（满级几乎免疫）", max: 3, base: 240, growth: 1.9, icon: "≋" },
+    { id: "guard", name: "防爆护栏", desc: "爆仓时少被挤掉 1 枚币/级", max: 3, base: 280, growth: 1.95, icon: "▣" }
   ];
 
   /* 钻石升级（稀缺货币，效果更强） */
@@ -106,7 +116,12 @@
     { id: "drop10k", name: "万台推落", desc: "累计推落 10000 枚币", check: (s) => s.totals.paid >= 10000 },
     { id: "earn100k", name: "推币大亨", desc: "累计收益 100000 金币", check: (s) => s.totals.earned >= 100000 },
     { id: "allmax", name: "满配机台", desc: "8 项金币升级全部升满", check: (s) => UPGRADES.every((u) => (s.upgrades[u.id] || 0) >= u.max) },
-    { id: "prestige1", name: "换台重生", desc: "完成 1 次换机台", check: (s) => (s.prestige || 0) >= 1 }
+    { id: "prestige1", name: "换台重生", desc: "完成 1 次换机台", check: (s) => (s.prestige || 0) >= 1 },
+    /* ---- 新玩法（惩罚 / 风险 / 大奖）的收集目标 ---- */
+    { id: "tower1", name: "金币塔落成", desc: "推落 1 座金币塔", check: (s) => (s.totals.towers || 0) >= 1 },
+    { id: "order5", name: "接单达人", desc: "完成 5 个限时订单", check: (s) => (s.totals.ordersDone || 0) >= 5 },
+    { id: "overflow1", name: "爆仓教训", desc: "经历 1 次爆仓（台面挤爆）", check: (s) => (s.totals.bursts || 0) >= 1 },
+    { id: "hot10", name: "超频狂人", desc: "使用 10 次超频", check: (s) => (s.totals.hotUses || 0) >= 10 }
   ];
 
   /* ---------------- 抽奖奖池（概率对玩家公开） ---------------- */
@@ -170,6 +185,51 @@
     return Math.min(CHEST.max, CHEST.base + CHEST.perLuck * l);
   }
 
+  /* ---------------- 拥堵 / 爆仓（失败机制第一层）
+   * 台面越满，推板越推不动：堆着不推 = 效率暴跌；
+   * 满到 100% 还会被「挤爆」，前沿的币直接被挤进角沟。
+   * 对策是排风马达 + 防爆护栏，以及玩家自己把币推下去。 */
+  const CONGESTION = {
+    warn: 0.80,       // 超过容量 80% 进入拥堵
+    speedLoss: 0.30,  // 完全拥堵时推板速度 -30%
+    burstAt: 10,      // 满台后硬塞多少次触发爆仓
+    burstCoins: 2,    // 每次爆仓挤掉的枚数
+    ventRelief: 0.34  // 排风马达每级抵消的拥堵比例
+  };
+
+  /* ---------------- 漏币连锁（失败机制第二层）
+   * 短时间内连续掉沟，机台会「漏」：角沟临时变宽，越漏越亏。 */
+  const STREAK = { n: 3, window: 6, dur: 6, mul: 1.15 };
+
+  /* ---------------- 金币塔
+   * 幸运石越高越容易刷出。base 给得很小：初始机台几乎不会刷到，
+   * 保证「开荒期投入产出比」不被稀有奖励污染。 */
+  const TOWER = {
+    base: 0.0012, perLuck: 0.0013, max: 0.012, cooldown: 55,
+    bonusBase: 220, bonusSpread: 200, bonusPerLuck: 36,
+    gold: 14, silver: 8
+  };
+  function towerChance(luck) {
+    const l = Math.max(0, luck || 0);
+    return Math.min(TOWER.max, TOWER.base + TOWER.perLuck * l);
+  }
+
+  /* ---------------- 超频（玩家主动，不是自动 buff）
+   * 冷却好了按钮亮起，玩家自己点：花金币换 8 秒双倍产出 + 推板加速。
+   * 因为必须手动触发，自动化测试永远不会碰到它。 */
+  const HOT = { readyEvery: 40, dur: 8, mul: 2, speed: 1.25, cost: 45 };
+
+  /* ---------------- 订单（风险目标 = 失败机制第三层）
+   * 机台会不定时给出一个限时订单，玩家自己决定接不接。
+   * 接了：达标拿重赏；没达标：罚金 + 机台过热（推板减速 12 秒）。 */
+  const OVERHEAT = { dur: 12, mul: 0.72 };
+  const ORDERS = [
+    { id: "rush", name: "急速推落", unit: "枚", time: 24, target: 18, reward: 210, penalty: 80 },
+    { id: "combo", name: "连击挑战", unit: "连击", time: 20, target: 10, reward: 260, penalty: 100 },
+    { id: "gem", name: "钻石订单", unit: "枚钻石币", time: 26, target: 2, reward: 320, penalty: 120 },
+    { id: "clean", name: "零失误", unit: "枚不掉沟", time: 22, target: 16, reward: 190, penalty: 70 }
+  ];
+
   /* ---------------- 计算 ---------------- */
   function tierMul(count) {
     let base = 1;
@@ -223,6 +283,7 @@
     LOTTERY_TABLE, LOTTERY_TICKET_COST,
     MODIFIERS, modById, rollModifier, PRESTIGE,
     REFILL, CHEST, chestChance,
+    CONGESTION, STREAK, TOWER, towerChance, HOT, OVERHEAT, ORDERS,
     mulFor, tierMul, tierLabel, tierRank, CRIT_MULT, critChance,
     upCost, fmt, makeRng
   };
