@@ -60,6 +60,44 @@
       this.parts.push({ ring: true, x: x, y: y, r: 6, life: 0.5, max: 0.5, color: color });
     },
 
+    /* 落台尘土：低矮、低速度、短命 —— 币砸在台面上的“重量感”靠它 */
+    dust(x, y, color) {
+      if (this.reduce || !this.particles) return;
+      const n = Math.round(7 * this.quality);
+      for (let i = 0; i < n; i++) {
+        const a = Math.PI + Math.random() * Math.PI;   // 只往上半边飞
+        const s = 40 + Math.random() * 80;
+        this.parts.push({
+          x: x, y: y,
+          vx: Math.cos(a) * s,
+          vy: Math.sin(a) * s * 0.4,
+          life: 0.22 + Math.random() * 0.22,
+          max: 0.44,
+          size: 1 + Math.random() * 1.8,
+          color: color || "rgba(196,208,255,.75)"
+        });
+      }
+    },
+
+    /* 星尘：稀有奖励专用，向上飘且不落 */
+    stardust(x, y, color, n) {
+      if (this.reduce || !this.particles) return;
+      const cnt = Math.round((n || 10) * this.quality);
+      for (let i = 0; i < cnt; i++) {
+        this.parts.push({
+          x: x + (Math.random() - 0.5) * 26, y: y,
+          vx: (Math.random() - 0.5) * 34,
+          vy: -30 - Math.random() * 60,
+          life: 0.5 + Math.random() * 0.5,
+          max: 1.0,
+          size: 1 + Math.random() * 2.2,
+          float: true,
+          color: color
+        });
+      }
+      if (this.parts.length > this.maxParts) this.parts.splice(0, this.parts.length - this.maxParts);
+    },
+
     text(x, y, str, color, size) {
       if (str == null || str === "") return;
       this.texts.push({ x: x, y: y, str: str, color: color || "#ffe9a8", life: 1.0, max: 1.0, size: size || 15 });
@@ -78,7 +116,7 @@
         p.life -= dt;
         if (p.life <= 0) { this.parts.splice(i, 1); continue; }
         if (p.ring) { p.r += 220 * dt; continue; }
-        p.vy += 420 * dt;
+        if (!p.float) p.vy += 420 * dt;      // 星尘不下落，尘土会落
         p.vx *= damp;
         p.x += p.vx * dt;
         p.y += p.vy * dt;
@@ -222,6 +260,44 @@
       const notes = [523, 659, 784, 1046, 1318];
       notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.22, "triangle", 0.36), i * 85));
       setTimeout(() => this.noise(0.5, 0.28, 1800), 300);
+    },
+
+    /* 金币塔：比宝箱更长、更“厚”的和弦，听感上就是更大的奖 */
+    tower() {
+      const notes = [392, 523, 659, 784, 1046, 1318, 1568];
+      notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.26, "triangle", 0.34), i * 70));
+      setTimeout(() => this.noise(0.7, 0.3, 1400), 240);
+      setTimeout(() => this.noise(0.5, 0.22, 2600), 420);
+    },
+
+    /* 落地：一小声闷响，币砸在台面上的“实物感” */
+    land() { this.noise(0.045, 0.14, 900); },
+
+    /* 超频：上行扫频，像机台被推上高转 */
+    hot() {
+      this.blip(320, 0.42, "sawtooth", 0.2, 1400);
+      setTimeout(() => this.blip(1200, 0.16, "triangle", 0.24, 1700), 160);
+    },
+
+    /* 漏币连锁：低频警报，和普通掉沟的“咕噜”区分开 */
+    streak() {
+      this.blip(300, 0.18, "square", 0.2, 220);
+      setTimeout(() => this.blip(240, 0.22, "square", 0.2, 170), 150);
+    },
+
+    /* 爆仓：一声闷响 + 碎币噪声 */
+    burst() {
+      this.blip(140, 0.24, "sawtooth", 0.26, 70);
+      this.noise(0.34, 0.3, 700);
+    },
+
+    orderOffer() { this.blip(880, 0.1, "sine", 0.22); setTimeout(() => this.blip(1174, 0.16, "sine", 0.22), 110); },
+    orderDone() {
+      [659, 880, 1174].forEach((n, i) => setTimeout(() => this.blip(n, 0.18, "triangle", 0.3), i * 90));
+    },
+    orderFail() {
+      this.blip(420, 0.22, "square", 0.22, 200);
+      setTimeout(() => this.blip(300, 0.3, "square", 0.2, 140), 150);
     },
 
     gutter() { this.blip(180, 0.16, "sine", 0.22, 90); },

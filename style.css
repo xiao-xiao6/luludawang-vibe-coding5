@@ -119,6 +119,19 @@ body{
 .cap.red .cap-bar i{background:var(--red)}
 .cap-text{font-variant-numeric:tabular-nums}
 
+/* 状态 chip：把“正在被惩罚”这件事显式告诉玩家。
+   注意：author 样式里的 .chip{display:inline-flex} 会盖掉 UA 的 [hidden]{display:none}，
+   所以必须显式补一条 —— 否则三个 chip 会永远挂在 HUD 上。 */
+.chip{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--line);background:#0f0c22;white-space:nowrap;
+}
+.chip[hidden]{display:none}
+.chip.warn{border-color:var(--gold);color:#ffe9a8;background:rgba(255,204,77,.12);animation:chipPulse 1.2s ease-in-out infinite alternate}
+.chip.bad{border-color:var(--red);color:#ffd8d8;background:rgba(255,107,107,.14);animation:chipPulse 1.2s ease-in-out infinite alternate}
+@keyframes chipPulse{from{box-shadow:0 0 0 rgba(255,107,107,0)}to{box-shadow:0 0 12px rgba(255,107,107,.5)}}
+
 button{font:inherit;color:inherit;cursor:pointer}
 .ico{
   background:#1d1840;border:1px solid var(--line);
@@ -191,6 +204,21 @@ button{font:inherit;color:inherit;cursor:pointer}
 }
 @keyframes jp{from{transform:scale(1) rotate(-1.2deg)}to{transform:scale(1.07) rotate(1.2deg)}}
 
+/* 稀有奖励拾取横幅：金币塔 / 订单达成之类的大事件，比 combo 更“重” */
+.hero{
+  position:absolute;left:0;right:0;top:16%;
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  opacity:0;transform:translateY(10px) scale(.92);
+  transition:opacity .18s ease,transform .22s cubic-bezier(.2,1.6,.4,1);
+  pointer-events:none;
+}
+.hero.on{opacity:1;transform:none}
+.hero .hn{
+  font-weight:900;font-size:clamp(18px,5vw,30px);letter-spacing:2px;
+  text-shadow:0 0 14px currentColor,0 2px 0 rgba(0,0,0,.6);
+}
+.hero small{font-size:clamp(11px,2.6vw,15px);font-weight:800;letter-spacing:1px;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+
 .stage-note{
   position:absolute;left:0;right:0;bottom:10px;text-align:center;
   font-size:12px;color:#cfc8f5;opacity:.92;pointer-events:none;
@@ -199,9 +227,49 @@ button{font:inherit;color:inherit;cursor:pointer}
 }
 .stage-note.hide{opacity:0}
 
+/* ---------------- 限时订单 ---------------- */
+.quest{
+  margin-top:8px;padding:8px 10px;border-radius:var(--r-md);
+  background:linear-gradient(180deg,#231d4c,#181334);
+  border:1px solid #43397c;display:grid;gap:6px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+  animation:slideIn .25s ease;
+}
+.quest[hidden]{display:none}
+.quest-main{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
+.quest-tag{
+  font-size:10.5px;font-weight:800;letter-spacing:1px;padding:2px 7px;border-radius:999px;
+  background:#2c2460;border:1px solid #4b3f8f;color:#cfc8f5;
+}
+.quest-tag.offer{background:rgba(255,204,77,.18);border-color:var(--gold);color:#ffe9a8;animation:chipPulse 1.1s ease-in-out infinite alternate}
+.quest-tag.run{background:rgba(78,226,255,.16);border-color:var(--cyan);color:#d6f6ff}
+.quest-name{font-weight:700}
+.quest-prog{color:var(--dim);font-size:11.5px;margin-left:auto;font-variant-numeric:tabular-nums}
+.quest-bar{height:6px;border-radius:999px;background:#0f0c22;border:1px solid var(--line);overflow:hidden}
+.quest-bar i{display:block;height:100%;width:0;transition:width .2s ease,background .2s ease}
+.quest-acts{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.quest-time{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+.quest-acts .ico.ok{border-color:var(--green);color:#d8ffe8}
+/* 接单/放弃靠右：两个按钮靠 margin-left:auto 推开，只有第一个吃 auto */
+.quest-acts #btnOrderYes{margin-left:auto}
+
+/* 超频按钮：就绪时发蓝光，超频中高亮，冷却时变灰 */
+.pad .hot[aria-pressed="true"]{
+  border-color:var(--cyan);
+  box-shadow:inset 0 0 18px rgba(78,226,255,.35),0 0 18px rgba(78,226,255,.35);
+  color:#d6f6ff;
+}
+.pad .hot:not([disabled]):not([aria-pressed="true"]){
+  border-color:#3f6fa8;
+  box-shadow:inset 0 0 12px rgba(78,226,255,.14);
+}
+
 /* ---------------- 操作区 ---------------- */
-.pad{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px;margin-top:10px}
-.pad button{
+/* 操作区：单行四键，投币键更宽；窄屏再折成 2×2，不额外占一行高度 */
+.pad{
+  display:grid;gap:8px;margin-top:10px;
+  grid-template-columns:1.5fr 1fr 1fr 1fr;
+}.pad button{
   border-radius:var(--r-md);border:1px solid var(--line);
   background:linear-gradient(180deg,#2a2255,#1b1638);
   padding:12px 8px;font-weight:700;font-size:14px;
@@ -389,6 +457,7 @@ body[data-mode="narrow"] .log{max-height:200px}
 /* 小屏手机：操作区两行，投币键独占一行更好按 */
 body[data-mode="narrow"] .pad{grid-template-columns:1fr 1fr}
 body[data-mode="narrow"] .pad .big{grid-column:1/-1}
+body[data-mode="narrow"] #btnLottery{grid-column:1/-1}
 body[data-mode="narrow"] .logo{font-size:16px}
 body[data-mode="narrow"] .cur{padding:3px 8px}
 body[data-mode="narrow"] .cap-bar{width:56px}
@@ -441,8 +510,11 @@ body[data-mode="compact"] .log{height:auto;max-height:calc(100vh - 16px)}
 
 /* ---------------- 无障碍：减弱动效 ---------------- */
 @media (prefers-reduced-motion:reduce){
-  .combo,.toast,.modal,.log li{animation:none!important;transition:none!important}
+  .combo,.toast,.modal,.log li,.quest{animation:none!important;transition:none!important}
   .jackpot span{animation:none!important}
   .ico.bail{animation:none!important}
+  .chip{animation:none!important}
+  .quest-tag{animation:none!important}
+  .hero{animation:none!important;transition:none!important}
   .pad button:active{transform:none}
 }

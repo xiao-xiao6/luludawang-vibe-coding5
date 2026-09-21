@@ -1,11 +1,14 @@
 /* ============================================================
- * 表现层：渲染 / 输入 / 面板 / 存档节奏
+ * 表现层：2.5D 渲染 / 输入 / 面板 / 存档节奏
+ *
+ * 视角：物理内核是干净的俯视 2D，CPProject 只回答「画在哪」。
+ * 所以投影怎么调都不会污染经济平衡测试的数字。
  * ============================================================ */
 (function () {
   "use strict";
 
   const D = window.CPData, E = window.CPEngine, Fx = window.CPFx, Sfx = window.CPSfx;
-  const L = window.CPLayout;
+  const L = window.CPLayout, P = window.CPProject;
 
   const cv = document.getElementById("cv");
   const ctx = cv.getContext("2d");
@@ -17,34 +20,77 @@
   let lastT = 0;
   let acc = 0;
   let saveAcc = 0;
+  let nowT = 0;
   const FIXED = 1 / 120;
 
   let dpr = 1;
   let spriteDpr = Math.min(2, window.devicePixelRatio || 1);
   let mode = "wide";
 
-  /* ---------------- 币精灵缓存 ---------------- */
+  const isHero = (kind) => {
+    const d = D.COIN_DEFS[kind];
+    return !!(d && d.hero);
+  };
+  /** 稀有奖励在屏幕上额外放大一点：物理半径不变（平衡不受影响），
+   * 但视觉上必须比铜币“大一圈”，否则满台币里根本认不出来。 */
+  const HERO_ART_BOOST = { gem: 1.35, chest: 1.22, tower: 1.26 };
+  function artBoost(kind) {
+    const d = D.COIN_DEFS[kind];
+    if (!d || !d.hero) return 1;
+    return HERO_ART_BOOST[d.art] || 1.12;
+  }
+
+  /* ---------------- 几何小工具（2.5D 梯形） ---------------- */
+  function quadPath(g, pts) {
+    g.beginPath();
+    g.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+    g.closePath();
+  }
+  /** 台面坐标的一段矩形 → 屏幕上的梯形（近大远小） */
+  function band(x0, x1, ya, yb) {
+    return [
+      [P.projectX(x0, ya), ya], [P.projectX(x1, ya), ya],
+      [P.projectX(x1, yb), yb], [P.projectX(x0, yb), yb]
+    ];
+  }
+  /** 沿深度方向的收剑直线：在透视下必须从 (x,ya) 连到 (x,yb)，
+   * 不能画成同一条竖线 —— 否则护栏、网格、斜纹会“不跟着透视走”。 */
+  function depthLine(g, x, ya, yb) {
+    g.beginPath();
+    g.moveTo(P.projectX(x, ya), ya);
+    g.lineTo(P.projectX(x, yb), yb);
+    g.stroke();
+  }
+  /** 收剑斜纹：同一族斜线的两端各自按深度投影，看上去会随台面一起“退远” */
+  function hatch(g, x0, x1, ya, yb, step, lean) {
+    for (let i = x0 - (yb - ya); i < x1 + (yb - ya); i += step) {
+      g.beginPath();
+      g.moveTo(P.projectX(i, yb), yb);
+      g.lineTo(P.projectX(i + lean, ya), ya);
+      g.stroke();
+    }
+  }
+
+  /* ---------------- 币精灵缓存 ----------------
+   * 按 art 分派：disc 圆片 / gem 棱面钻石 / chest 伪3D 宝箱 / tower 伪3D 金币塔。
+   * 稀有奖励走「立起来」的画法，不再和普通币一样只是转圈。 */
   const sprites = {};
-  function buildSprite(def) {
-    const pad = 4;
-    const r = def.r;
-    const size = Math.ceil((r + pad) * 2);
+  const halos = {};
+
+  function buildDisc(def) {
+    const pad = 4, r = def.r, size = Math.ceil((r + pad) * 2);
     const c = document.createElement("canvas");
     c.width = c.height = Math.ceil(size * spriteDpr);
     const g = c.getContext("2d");
     g.scale(spriteDpr, spriteDpr);
     const cx = size / 2, cy = size / 2;
+    g.save(); g.translate(cx, cy);
 
-    g.save();
-    g.translate(cx, cy);
-
-    // 阴影
-    g.globalAlpha = 0.35;
-    g.fillStyle = "#000";
+    g.globalAlpha = 0.35; g.fillStyle = "#000";
     g.beginPath(); g.ellipse(1.5, 2.5, r, r * 0.92, 0, 0, Math.PI * 2); g.fill();
     g.globalAlpha = 1;
 
-    // 主体
     const grd = g.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.15, 0, 0, r * 1.05);
     grd.addColorStop(0, def.color2);
     grd.addColorStop(0.55, def.color);
@@ -52,17 +98,11 @@
     g.fillStyle = grd;
     g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill();
 
-    // 外圈
-    g.lineWidth = 1.6;
-    g.strokeStyle = def.ring;
+    g.lineWidth = 1.6; g.strokeStyle = def.ring;
     g.beginPath(); g.arc(0, 0, r - 0.8, 0, Math.PI * 2); g.stroke();
-
-    // 内圈压印
-    g.lineWidth = 1;
-    g.strokeStyle = "rgba(255,255,255,.32)";
+    g.lineWidth = 1; g.strokeStyle = "rgba(255,255,255,.32)";
     g.beginPath(); g.arc(0, 0, r * 0.68, 0, Math.PI * 2); g.stroke();
 
-    // 字符
     g.fillStyle = "rgba(0,0,0,.5)";
     g.font = "900 " + Math.round(r * 1.02) + "px system-ui, sans-serif";
     g.textAlign = "center"; g.textBaseline = "middle";
@@ -70,7 +110,6 @@
     g.fillStyle = def.color2;
     g.fillText(def.glyph, 0, 0);
 
-    // 高光
     const hl = g.createLinearGradient(-r, -r, r * 0.3, r * 0.2);
     hl.addColorStop(0, "rgba(255,255,255,.75)");
     hl.addColorStop(0.45, "rgba(255,255,255,.06)");
@@ -81,18 +120,247 @@
     g.restore();
     return { canvas: c, size: size };
   }
+
+  /** 棱面钻石：上冠 + 下亭，靠面与面的明度差立起来 */
+  function buildGem(def) {
+    const r = def.r * 1.5, size = Math.ceil(r * 2 + 10);
+    const c = document.createElement("canvas");
+    c.width = c.height = Math.ceil(size * spriteDpr);
+    const g = c.getContext("2d");
+    g.scale(spriteDpr, spriteDpr);
+    g.translate(size / 2, size / 2 + 1);
+
+    const tw = r * 0.5;    // 桌面半径
+    const hw = r * 0.95;   // 腰围半径
+    const top = -r * 0.72, waist = -r * 0.08, tip = r * 0.95;
+
+    // 亭部（下半）
+    g.fillStyle = def.ring;
+    g.beginPath();
+    g.moveTo(-hw, waist); g.lineTo(hw, waist); g.lineTo(0, tip); g.closePath();
+    g.fill();
+    // 亭部左半稍亮 → 单侧受光
+    g.fillStyle = def.color;
+    g.beginPath();
+    g.moveTo(-hw, waist); g.lineTo(0, waist); g.lineTo(0, tip); g.closePath();
+    g.fill();
+
+    // 冠部（上半）
+    const grd = g.createLinearGradient(-hw, top, hw, waist);
+    grd.addColorStop(0, def.color2);
+    grd.addColorStop(0.5, def.color);
+    grd.addColorStop(1, def.ring);
+    g.fillStyle = grd;
+    g.beginPath();
+    g.moveTo(-tw, top); g.lineTo(tw, top);
+    g.lineTo(hw, waist); g.lineTo(-hw, waist); g.closePath();
+    g.fill();
+
+    // 刻面线
+    g.strokeStyle = "rgba(255,255,255,.42)";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(-tw, top); g.lineTo(-hw * 0.45, waist);
+    g.moveTo(tw, top); g.lineTo(hw * 0.45, waist);
+    g.moveTo(0, top); g.lineTo(0, waist);
+    g.moveTo(-tw, top); g.lineTo(0, top); g.lineTo(tw, top);
+    g.moveTo(-hw, waist); g.lineTo(hw, waist);
+    g.stroke();
+    g.strokeStyle = "rgba(255,255,255,.2)";
+    g.beginPath();
+    g.moveTo(-hw * 0.45, waist); g.lineTo(0, tip);
+    g.moveTo(hw * 0.45, waist); g.lineTo(0, tip);
+    g.stroke();
+
+    // 高光
+    g.fillStyle = "rgba(255,255,255,.72)";
+    g.beginPath();
+    g.moveTo(-tw * 0.75, top + r * 0.1); g.lineTo(-tw * 0.1, top + r * 0.06);
+    g.lineTo(-hw * 0.5, waist - r * 0.06); g.lineTo(-hw * 0.72, waist - r * 0.2);
+    g.closePath(); g.fill();
+
+    g.restore();
+    return { canvas: c, size: size, art: "gem" };
+  }
+
+  /** 伪3D 宝箱：正面 + 顶面 + 箱盖，带锁扣 */
+  function buildChest(def) {
+    const r = def.r * 1.25, size = Math.ceil(r * 2.6 + 12);
+    const c = document.createElement("canvas");
+    c.width = c.height = Math.ceil(size * spriteDpr);
+    const g = c.getContext("2d");
+    g.scale(spriteDpr, spriteDpr);
+    g.translate(size / 2, size / 2 + 2);
+
+    const hw = r * 1.02;            // 正面半宽
+    const bodyTop = -r * 0.18, bodyBot = r * 0.95;
+    const d = r * 0.42;             // 伪3D 纵深
+
+    // 地面投影
+    g.globalAlpha = 0.4; g.fillStyle = "#000";
+    g.beginPath(); g.ellipse(0, bodyBot + r * 0.12, hw * 1.02, r * 0.3, 0, 0, Math.PI * 2); g.fill();
+    g.globalAlpha = 1;
+
+    // 侧面（右侧厚度）
+    g.fillStyle = def.ring;
+    g.beginPath();
+    g.moveTo(hw, bodyTop); g.lineTo(hw + d, bodyTop - d * 0.5);
+    g.lineTo(hw + d, bodyBot - d * 0.5); g.lineTo(hw, bodyBot); g.closePath();
+    g.fill();
+
+    // 顶面（箱盖顶）
+    g.fillStyle = def.color;
+    g.beginPath();
+    g.moveTo(-hw, bodyTop); g.lineTo(hw, bodyTop);
+    g.lineTo(hw + d, bodyTop - d * 0.5); g.lineTo(-hw + d, bodyTop - d * 0.5);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = "rgba(255,255,255,.3)"; g.lineWidth = 1;
+    g.stroke();
+
+    // 正面（箱体）
+    const grd = g.createLinearGradient(0, bodyTop, 0, bodyBot);
+    grd.addColorStop(0, def.color);
+    grd.addColorStop(0.62, def.ring);
+    grd.addColorStop(1, "#2b0f3d");
+    g.fillStyle = grd;
+    g.beginPath(); g.rect(-hw, bodyTop, hw * 2, bodyBot - bodyTop); g.fill();
+
+    // 箱盖分界线 + 铁箍
+    g.fillStyle = "rgba(255,255,255,.22)";
+    g.fillRect(-hw, bodyTop + (bodyBot - bodyTop) * 0.3, hw * 2, 2);
+    g.fillStyle = "rgba(0,0,0,.3)";
+    g.fillRect(-hw * 0.22, bodyTop, 3, bodyBot - bodyTop);
+    g.fillRect(hw * 0.22 - 3, bodyTop, 3, bodyBot - bodyTop);
+
+    // 锁扣
+    g.fillStyle = "#ffd75e";
+    g.beginPath();
+    g.moveTo(-r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.24);
+    g.lineTo(r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.24);
+    g.lineTo(r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.62);
+    g.lineTo(-r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.62);
+    g.closePath(); g.fill();
+    g.fillStyle = "#7a4a06";
+    g.beginPath(); g.arc(0, bodyTop + (bodyBot - bodyTop) * 0.4, r * 0.1, 0, Math.PI * 2); g.fill();
+
+    // 边缘高光
+    g.strokeStyle = "rgba(255,255,255,.45)"; g.lineWidth = 1.4;
+    g.beginPath(); g.rect(-hw, bodyTop, hw * 2, bodyBot - bodyTop); g.stroke();
+
+    g.restore();
+    return { canvas: c, size: size, art: "chest" };
+  }
+
+  /** 伪3D 金币塔：一摞逐渐收窄的金币，顶上一枚立起来 */
+  function buildTower(def) {
+    const r = def.r * 1.15, size = Math.ceil(r * 2.8 + 14);
+    const c = document.createElement("canvas");
+    c.width = c.height = Math.ceil(size * spriteDpr);
+    const g = c.getContext("2d");
+    g.scale(spriteDpr, spriteDpr);
+    g.translate(size / 2, size / 2 + 3);
+
+    const n = 5;                       // 摞 5 层
+    const stepY = r * 0.32;
+    const baseY = r * 0.78;
+
+    g.globalAlpha = 0.42; g.fillStyle = "#000";
+    g.beginPath(); g.ellipse(0, baseY + r * 0.22, r * 1.05, r * 0.32, 0, 0, Math.PI * 2); g.fill();
+    g.globalAlpha = 1;
+
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const rr = r * (1 - 0.1 * t);
+      const y = baseY - i * stepY;
+      // 币身厚度
+      g.fillStyle = def.ring;
+      g.beginPath();
+      g.moveTo(-rr, y - r * 0.14); g.lineTo(rr, y - r * 0.14);
+      g.lineTo(rr, y + r * 0.1); g.lineTo(-rr, y + r * 0.1);
+      g.closePath(); g.fill();
+      // 顶面
+      const grd = g.createLinearGradient(-rr, y - r * 0.3, rr, y + r * 0.1);
+      grd.addColorStop(0, def.color2);
+      grd.addColorStop(0.55, def.color);
+      grd.addColorStop(1, def.ring);
+      g.fillStyle = grd;
+      g.beginPath(); g.ellipse(0, y - r * 0.14, rr, r * 0.3, 0, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = "rgba(255,255,255,.34)"; g.lineWidth = 1;
+      g.beginPath(); g.ellipse(0, y - r * 0.14, rr * 0.72, r * 0.2, 0, 0, Math.PI * 2); g.stroke();
+    }
+
+    // 顶部立起来的那一枚（金币塔的"尖"）
+    const topY = baseY - (n - 1) * stepY - r * 0.62;
+    const grd2 = g.createRadialGradient(-r * 0.3, topY - r * 0.2, r * 0.1, 0, topY, r * 0.62);
+    grd2.addColorStop(0, "#fff6d0");
+    grd2.addColorStop(0.55, def.color);
+    grd2.addColorStop(1, def.ring);
+    g.fillStyle = grd2;
+    g.beginPath(); g.arc(0, topY, r * 0.56, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1.2;
+    g.beginPath(); g.arc(0, topY, r * 0.56, 0, Math.PI * 2); g.stroke();
+
+    g.restore();
+    return { canvas: c, size: size, art: "tower" };
+  }
+
+  function buildSprite(def) {
+    if (def.art === "gem") return buildGem(def);
+    if (def.art === "chest") return buildChest(def);
+    if (def.art === "tower") return buildTower(def);
+    return buildDisc(def);
+  }
   function sprite(kind) {
     if (!sprites[kind]) sprites[kind] = buildSprite(D.COIN_DEFS[kind]);
     return sprites[kind];
   }
+  /** 稀有奖励的脉冲光晕：烘焙一次，主循环只 drawImage（不每帧建渐变） */
+  function halo(color) {
+    if (halos[color]) return halos[color];
+    const size = 192;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const g = c.getContext("2d");
+    const grd = g.createRadialGradient(size / 2, size / 2, 2, size / 2, size / 2, size / 2);
+    grd.addColorStop(0, color);
+    grd.addColorStop(0.30, color.replace(/[\d.]+\)$/, "0.5)"));
+    grd.addColorStop(0.62, color.replace(/[\d.]+\)$/, "0.14)"));
+    grd.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+    halos[color] = c;
+    return c;
+  }
 
-  /* ---------------- 静态台面烘焙 ----------------
-   * 网格 / 导轨 / 角沟 / 出币口 / PAYOUT 标签 / 推板渐变 / 推板前沿辉光
-   * 全部预烘焙成离屏 canvas，主循环只做 drawImage ——
-   * 不再每帧重建 3~4 个渐变、也不再每帧跑 shadowBlur。
+  /** 稀有奖励的“地面光环”：一圈旋转虚线的椭圆环，让它在满台币里一眼可见 */
+  function heroRing(color) {
+    const key = "ring:" + color;
+    if (halos[key]) return halos[key];
+    const s = 160;
+    const c = document.createElement("canvas");
+    c.width = c.height = s;
+    const g = c.getContext("2d");
+    g.translate(s / 2, s / 2);
+    g.scale(1, 0.52);                      // 压成椭圆：贴合倾斜台面
+    g.strokeStyle = color;
+    g.lineWidth = 4;
+    g.setLineDash([13, 9]);
+    g.beginPath(); g.arc(0, 0, 58, 0, Math.PI * 2); g.stroke();
+    g.setLineDash([]);
+    g.globalAlpha = 0.45;
+    g.lineWidth = 1.5;
+    g.beginPath(); g.arc(0, 0, 68, 0, Math.PI * 2); g.stroke();
+    halos[key] = c;
+    return c;
+  }
+
+  /* ---------------- 静态台面烘焙（带透视） ----------------
+   * 护栏 / 角沟 / 出币口 / 网格全部按 2.5D 收敛烘焙成离屏 canvas，
+   * 主循环只做 drawImage。
    */
   let stageBake = null, stageKey = "";
-  let plateGradBake = null, plateEdgeBake = null, plateBakeDpr = 0;
+  let plateGrad = null, plateHatch = null, plateBakeDpr = 0;
 
   function bakeStage() {
     const w = game.world;
@@ -103,60 +371,79 @@
     const g = c.getContext("2d");
     g.scale(dpr, dpr);
 
-    // 台面底
+    // 台面外（机台内壁）
     const bg = g.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, "#0d0b1e");
-    bg.addColorStop(0.5, "#141029");
-    bg.addColorStop(1, "#0a0818");
+    bg.addColorStop(0, "#07060f");
+    bg.addColorStop(0.5, "#0a0818");
+    bg.addColorStop(1, "#06050d");
     g.fillStyle = bg;
     g.fillRect(0, 0, W, H);
 
-    // 台面网格（透视暗示）
+    // 台面底板（梯形：远处收窄 → 透视）
+    const floor = g.createLinearGradient(0, 0, 0, H);
+    floor.addColorStop(0, "#080613");
+    floor.addColorStop(0.35, "#100d24");
+    floor.addColorStop(1, "#1a1436");
+    g.fillStyle = floor;
+    quadPath(g, band(0, W, 0, H));
+    g.fill();
+
+    // 网格：横向直线 + 纵向**收剑**线（沿深度投影，不画成竖直）
     g.strokeStyle = "rgba(120,150,255,.07)";
     g.lineWidth = 1;
     for (let y = face; y < w.payoutY; y += 34) {
-      g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+      g.beginPath();
+      g.moveTo(P.projectX(0, y), y);
+      g.lineTo(P.projectX(W, y), y);
+      g.stroke();
     }
-    for (let x = 0; x <= W; x += 40) {
-      g.beginPath(); g.moveTo(x, face); g.lineTo(x, w.payoutY); g.stroke();
+    for (let x = 0; x <= W; x += 40) depthLine(g, x, 0, H);
+    // 近端（出币口附近）额外压几道横向亮线：远处密、近处疏，强化深度
+    g.strokeStyle = "rgba(120,150,255,.05)";
+    for (let i = 1; i <= 3; i++) {
+      const y = w.payoutY + i * 26;
+      if (y > H) break;
+      g.beginPath();
+      g.moveTo(P.projectX(0, y), y);
+      g.lineTo(P.projectX(W, y), y);
+      g.stroke();
     }
 
-    // 两侧导轨
-    const railGrad = g.createLinearGradient(0, 0, 16, 0);
-    railGrad.addColorStop(0, "#2b2358");
-    railGrad.addColorStop(1, "#151130");
-    g.fillStyle = railGrad;
-    g.fillRect(0, face, 10, w.payoutY - face);
-    g.save();
-    g.translate(W, 0); g.scale(-1, 1);
-    g.fillStyle = railGrad;
-    g.fillRect(0, face, 10, w.payoutY - face);
-    g.restore();
+    // 两侧导轨（沿深度收敛的梯形）
+    for (const side of [0, 1]) {
+      const xa = side ? W - 10 : 0, xb = side ? W : 10;
+      const rail = g.createLinearGradient(side ? W - 10 : 0, 0, side ? W : 10, 0);
+      rail.addColorStop(0, side ? "#151130" : "#2b2358");
+      rail.addColorStop(1, side ? "#2b2358" : "#151130");
+      g.fillStyle = rail;
+      quadPath(g, band(xa, xb, 0, H));
+      g.fill();
+    }
+    // 导轨内沿的高光（沿深度收剑的一条线）
     g.strokeStyle = "rgba(78,226,255,.28)";
     g.lineWidth = 1.4;
-    g.beginPath(); g.moveTo(10, face); g.lineTo(10, w.payoutY); g.stroke();
-    g.beginPath(); g.moveTo(W - 10, face); g.lineTo(W - 10, w.payoutY); g.stroke();
+    for (const x of [10, W - 10]) depthLine(g, x, 0, H);
 
-    // 角沟（丢币口）
+    // 角沟（丢币口）：也沿深度收敛
     const gy = w.payoutY - 52;
+    const gx0 = P.projectX(0, gy), gx1 = P.projectX(gw, gy);
+    const gx2 = P.projectX(W - gw, gy), gx3 = P.projectX(W, gy);
     g.fillStyle = "#04030a";
-    g.fillRect(0, gy, gw, 52);
-    g.fillRect(W - gw, gy, gw, 52);
+    quadPath(g, band(0, gw, gy, w.payoutY)); g.fill();
+    quadPath(g, band(W - gw, W, gy, w.payoutY)); g.fill();
     g.strokeStyle = "rgba(255,107,107,.5)";
     g.lineWidth = 1.2;
-    g.strokeRect(0.5, gy + 0.5, gw, 52);
-    g.strokeRect(W - gw - 0.5, gy + 0.5, gw, 52);
-    // 危险斜纹
+    quadPath(g, band(0, gw, gy, w.payoutY)); g.stroke();
+    quadPath(g, band(W - gw, W, gy, w.payoutY)); g.stroke();
+    // 危险斜纹（跟着透视收剑，不再是一成不变的平行线）
     g.save();
     g.beginPath();
-    g.rect(0, gy, gw, 52);
-    g.rect(W - gw, gy, gw, 52);
+    g.moveTo(gx0, gy); g.lineTo(gx1, gy); g.lineTo(gx2, w.payoutY); g.lineTo(gx3, w.payoutY);
+    g.closePath();
     g.clip();
-    g.strokeStyle = "rgba(255,107,107,.22)";
+    g.strokeStyle = "rgba(255,107,107,.26)";
     g.lineWidth = 5;
-    for (let i = -60; i < W + 60; i += 14) {
-      g.beginPath(); g.moveTo(i, gy + 60); g.lineTo(i + 60, gy - 10); g.stroke();
-    }
+    hatch(g, 0, W, gy, w.payoutY, 14, 46);
     g.restore();
 
     // 出币口
@@ -164,12 +451,15 @@
     pay.addColorStop(0, "rgba(78,226,255,.16)");
     pay.addColorStop(1, "rgba(78,226,255,.02)");
     g.fillStyle = pay;
-    g.fillRect(0, w.payoutY, W, H - w.payoutY);
+    quadPath(g, band(0, W, w.payoutY, H)); g.fill();
     g.strokeStyle = "rgba(78,226,255,.55)";
     g.lineWidth = 2;
-    g.beginPath(); g.moveTo(0, w.payoutY); g.lineTo(W, w.payoutY); g.stroke();
+    g.beginPath();
+    g.moveTo(P.projectX(0, w.payoutY), w.payoutY);
+    g.lineTo(P.projectX(W, w.payoutY), w.payoutY);
+    g.stroke();
 
-    // PAYOUT 标签：优先用原生的 letterSpacing，跨平台字宽才稳定
+    // PAYOUT 标签
     g.fillStyle = "rgba(78,226,255,.42)";
     g.font = "700 13px system-ui, sans-serif";
     g.textAlign = "center";
@@ -182,103 +472,165 @@
     return c;
   }
 
-  function bakePlateGrad() {
-    const hh = Math.max(60, Math.round(game.world.plateMaxY));
-    const c = document.createElement("canvas");
-    c.width = Math.round(W * dpr); c.height = Math.round(hh * dpr);
-    const g = c.getContext("2d");
-    g.scale(dpr, dpr);
-    const grd = g.createLinearGradient(0, 0, 0, hh);
-    grd.addColorStop(0, "#3b3270");
-    grd.addColorStop(0.62, "#2a2358");
-    grd.addColorStop(1, "#463b8f");
-    g.fillStyle = grd;
-    g.fillRect(0, 0, W, hh);
-    return { canvas: c, h: hh };
-  }
+  /* 推板：竖向渐变 + 斜纹图案，都只建一次，之后每帧只填梯形路径 */
+  function bakePlate() {
+    const hh = Math.max(60, Math.round(game.world.plateMaxY * game.world.reachMul + 40));
+    const gg = document.createElement("canvas").getContext("2d");
+    plateGrad = gg.createLinearGradient(0, 0, 0, hh);
+    plateGrad.addColorStop(0, "#241d47");
+    plateGrad.addColorStop(0.55, "#3b3270");
+    plateGrad.addColorStop(1, "#4a3f9c");
 
-  function bakePlateEdge() {
-    const hh = 52, lineY = 40;
-    const c = document.createElement("canvas");
-    c.width = Math.round(W * dpr); c.height = Math.round(hh * dpr);
-    const g = c.getContext("2d");
-    g.scale(dpr, dpr);
-    // 推板斜纹
-    g.save();
-    g.beginPath(); g.rect(0, 0, W, 34); g.clip();
-    g.strokeStyle = "rgba(255,204,77,.16)";
-    g.lineWidth = 6;
-    for (let i = -60; i < W + 60; i += 18) {
-      g.beginPath(); g.moveTo(i, 40); g.lineTo(i + 40, -6); g.stroke();
+    const pc = document.createElement("canvas");
+    pc.width = 40; pc.height = 40;
+    const pg = pc.getContext("2d");
+    pg.strokeStyle = "rgba(255,204,77,.18)";
+    pg.lineWidth = 7;
+    for (let i = -40; i < 80; i += 18) {
+      pg.beginPath(); pg.moveTo(i, 40); pg.lineTo(i + 40, -6); pg.stroke();
     }
-    g.restore();
-    // 推板前沿
-    g.fillStyle = "#5b4bc4";
-    g.fillRect(0, 36, W, 6);
-    g.fillStyle = "rgba(78,226,255,.9)";
-    g.fillRect(0, lineY, W, 2);
-    // 辉光：烘焙一次，主循环里不再有 shadowBlur
-    if (Fx.shadows) {
-      g.save();
-      g.shadowColor = "rgba(78,226,255,.9)";
-      g.shadowBlur = 14;
-      g.fillStyle = "rgba(160,245,255,.85)";
-      g.fillRect(0, lineY, W, 2);
-      g.restore();
-    }
-    return { canvas: c, h: hh, lineY: lineY };
+    plateHatch = ctx.createPattern(pc, "repeat");
   }
 
   function ensureBaked() {
     if (!game) return;
     const key = dpr + "|" + game.world.gutterWidth.toFixed(2) + "|" + game.world.payoutY;
     if (key !== stageKey) { stageBake = bakeStage(); stageKey = key; }
-    if (plateBakeDpr !== dpr) {
-      plateGradBake = bakePlateGrad();
-      plateEdgeBake = bakePlateEdge();
-      plateBakeDpr = dpr;
-    }
+    if (plateBakeDpr !== dpr) { bakePlate(); plateBakeDpr = dpr; }
   }
 
   /* ---------------- 台面绘制 ---------------- */
   function drawPlate() {
     const w = game.world;
     const face = w.plate.y;
-    ctx.drawImage(plateGradBake.canvas, 0, 0, W, plateGradBake.h, 0, 0, W, face);
-    ctx.drawImage(plateEdgeBake.canvas, 0, face - plateEdgeBake.lineY, W, plateEdgeBake.h);
-    // 推板顶部标签
+    const reach = w.plateMaxReach;
+
+    // 推板下的阴影：让推板"浮"在台面上，而不是贴在平面上
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#000";
+    quadPath(ctx, band(0, W, Math.max(0, face - 6), face + 14));
+    ctx.fill();
+    ctx.restore();
+
+    // 板体
+    ctx.save();
+    quadPath(ctx, band(0, W, 0, face));
+    ctx.fillStyle = plateGrad;
+    ctx.fill();
+    ctx.fillStyle = plateHatch;
+    ctx.fill();
+    ctx.restore();
+
+    // 前沿：用几层半透明梯形伪造辉光（比每帧 shadowBlur 便宜得多）
+    const bands = [
+      [face - 16, face + 12, "rgba(78,226,255,.07)"],
+      [face - 10, face + 7, "rgba(78,226,255,.16)"],
+      [face - 16, face + 5, "rgba(91,75,196,.95)"],
+      [face - 3, face + 1, "rgba(160,245,255,.92)"]
+    ];
+    for (const b of bands) {
+      ctx.fillStyle = b[2];
+      quadPath(ctx, band(0, W, b[0], b[1]));
+      ctx.fill();
+    }
+
+    // 推板顶部标签（贴在板体上，跟着透视走）
     ctx.fillStyle = "rgba(200,190,255,.35)";
     ctx.font = "700 12px system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("P U S H E R", W / 2, Math.max(16, face - 46));
+    ctx.fillText("P U S H E R", W / 2, Math.max(14, Math.min(face - 40, 60)));
     ctx.textAlign = "start";
+    void reach;
   }
 
-  // 每帧排序用的复用缓冲：不再每帧分配一个新数组
+  // 每帧排序用的复用缓冲：不再每帧分配新数组
   const orderBuf = [];
+  // 稀有奖励的放大不能把币画出画布：验一下最坏情况
   function drawCoins() {
     const coins = game.world.coins;
+    const drawShadows = Fx.particles;   // 低端机跳过影子，省一半绘制
+    void isHero;
+
     orderBuf.length = coins.length;
     for (let i = 0; i < coins.length; i++) orderBuf[i] = coins[i];
     if (orderBuf.length > 1) orderBuf.sort((a, b) => a.y - b.y);
+
+    // 落地的那一下：扬尘 + 闷响（每枚币只消费一次）
     for (let i = 0; i < orderBuf.length; i++) {
       const c = orderBuf[i];
+      if (c.landFx > 0.85 && !c._landDone) {
+        c._landDone = true;
+        Fx.dust(P.projectX(c.x, c.y), c.y + 3, D.COIN_DEFS[c.kind].glow);
+        Sfx.land();
+      } else if (c.landFx <= 0 && c._landDone) {
+        c._landDone = false;
+      }
+    }
+
+    if (drawShadows) {
+      for (let i = 0; i < orderBuf.length; i++) {
+        const c = orderBuf[i];
+        const sh = P.shadow(c.x, c.y, c.z, c.r);
+        ctx.globalAlpha = sh.alpha;
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.ellipse(sh.x, sh.y, sh.rx, sh.ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    for (let i = 0; i < orderBuf.length; i++) {
+      const c = orderBuf[i];
+      const def = D.COIN_DEFS[c.kind];
       const sp = sprite(c.kind);
-      const s = 0.35 + 0.65 * c.squash;
       const sc = sp.size;
+      const hero = !!def.halo;
+
+      /* 稀有奖励：光晕 + 旋转地面光环 + 轻微呼吸放大。
+       * 这是主人明确提的需求 —— 满台铜币里必须一眼看到金币塔 / 钻石 / 宝箱。
+       * 全部是纯视觉量，不碰物理半径，所以平衡测试不受影响。 */
+      if (hero) {
+        const pulse = 0.5 + 0.5 * Math.sin(nowT * 3.4 + c.id);
+        const hx = P.projectX(c.x, c.y), hy = P.projectY(c.y, c.z);
+        const hs = sc * 2.6 * (1 + 0.06 * pulse);
+        ctx.globalAlpha = 0.34 + 0.4 * pulse;
+        ctx.drawImage(halo(def.halo), hx - hs / 2, hy - hs / 2, hs, hs);
+        ctx.globalAlpha = 1;
+        // 地面光环（不随币升高，始终贴在台面上）
+        const rs = sc * 1.9;
+        ctx.save();
+        ctx.globalAlpha = 0.55 + 0.35 * pulse;
+        ctx.translate(P.projectX(c.x, c.y), c.y + 3);
+        ctx.rotate(nowT * 0.9 + c.id * 0.7);
+        ctx.drawImage(heroRing(def.halo), -rs / 2, -rs / 2, rs, rs);
+        ctx.restore();
+      }
+
+      const k = P.scaleAt(c.y, c.z) * artBoost(c.kind);
+      const px = P.projectX(c.x, c.y), py = P.projectY(c.y, c.z);
+      const sq = 0.35 + 0.65 * c.squash;
+      const breath = hero ? 1 + 0.05 * Math.sin(nowT * 3.4 + c.id) : 1;   // 稀有点币“呼吸”
+
       ctx.save();
-      ctx.translate(c.x, c.y);
-      ctx.rotate(c.rot);
-      ctx.scale(s, s);
+      ctx.translate(px, py);
+      // 稀有奖励不跟着自转（立着的东西转起来像纸片），只做轻微摇摆
+      if (def.art === "gem") ctx.rotate(c.rot * 0.35);
+      else if (def.art === "disc") ctx.rotate(c.rot);
+      else ctx.rotate(Math.sin(nowT * 2 + c.id) * 0.05);
+      ctx.scale(k * breath, k * sq * breath);
       ctx.drawImage(sp.canvas, -sc / 2, -sc / 2, sc, sc);
       ctx.restore();
 
       if (c.spark > 0.02) {
         ctx.save();
         ctx.globalAlpha = c.spark * 0.75;
-        ctx.strokeStyle = D.COIN_DEFS[c.kind].glow;
+        ctx.strokeStyle = def.glow;
         ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(c.x, c.y, c.r + 3 + (1 - c.spark) * 8, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(px, py, (c.r + 3 + (1 - c.spark) * 8) * k, 0, Math.PI * 2);
+        ctx.stroke();
         ctx.restore();
       }
       if (c.stress > 1.5) {
@@ -286,38 +638,48 @@
         ctx.globalAlpha = Math.min(0.5, c.stress / 10);
         ctx.strokeStyle = "#fff";
         ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(px, py, c.r * k, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       }
     }
   }
 
-  /* 瞄准提示：横向点哪是哪（磁力/护栏升级的意义所在），
-   * 纵向其实是 dropZone 里的随机带 —— 所以画成椭圆散布带，
-   * 不再用一个 11px 小圆假装"纵向也能精瞄"。 */
+  /* 瞄准提示：横向点哪是哪（磁力/护栏升级的意义所在）。
+   * 2.5D 下同一横向坐标在不同深度对应不同屏幕 x，
+   * 所以引导线是**收敛曲线**，落点提示也跟着透视压扁。 */
   function drawAim() {
     if (!hasHover) return;
     const w = game.world;
     const z = w.dropZone;
     const x = Math.max(14, Math.min(W - 14, hoverX));
-    const ry = Math.max(18, (z.y1 - z.y0) / 2);
+    const mid = z.yMid;
+    const k = P.kAt(mid);
+    const ry = Math.max(10, (z.y1 - z.y0) / 2 * k * 0.55);
+
     ctx.save();
     ctx.globalAlpha = 0.5;
     ctx.strokeStyle = "rgba(255,204,77,.55)";
     ctx.lineWidth = 1.4;
     ctx.setLineDash([6, 6]);
-    ctx.beginPath(); ctx.moveTo(x, z.y0 + 8); ctx.lineTo(x, w.payoutY); ctx.stroke();
+    ctx.beginPath();
+    for (let y = z.y0 + 8; y <= w.payoutY; y += 12) {
+      const sx = P.projectX(x, y);
+      if (y === z.y0 + 8) ctx.moveTo(sx, y); else ctx.lineTo(sx, y);
+    }
+    ctx.stroke();
     ctx.setLineDash([]);
+
+    const px = P.projectX(x, mid);
     ctx.globalAlpha = 0.16;
     ctx.fillStyle = "rgba(255,233,168,.6)";
-    ctx.beginPath(); ctx.ellipse(x, z.yMid, 12, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(px, mid, 12 * k, ry, 0, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.85;
     ctx.strokeStyle = "rgba(255,233,168,.9)";
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.ellipse(x, z.yMid, 12, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(px, mid, 12 * k, ry, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.globalAlpha = 0.7;
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.ellipse(x, z.yMid, 4, ry * 0.35, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(px, mid, 4 * k, ry * 0.35, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
 
@@ -341,15 +703,19 @@
   /* ---------------- DOM ---------------- */
   const $ = (id) => document.getElementById(id);
   const elCoin = $("vCoin"), elGem = $("vGem"), elTix = $("vTix");
-  const elCombo = $("comboBadge"), elJackpot = $("jackpotFx");
+  const elCombo = $("comboBadge"), elJackpot = $("jackpotFx"), elHero = $("heroFx");
   const elTicker = $("ticker"), elLogList = $("logList"), elToasts = $("toasts");
   const elStageNote = $("stageNote"), elAutoLv = $("autoLv"), elTixLeft = $("tixLeft");
   const btnDrop = $("btnDrop"), btnAuto = $("btnAuto"), btnLottery = $("btnLottery");
   const btnMute = $("btnMute"), btnPause = $("btnPause"), btnBailout = $("btnBailout");
+  const btnHot = $("btnHot"), elHotLv = $("hotLv");
   const elCapText = $("capText"), elCapFill = $("capFill"), elCap = $("cap");
+  const chipCongest = $("congestChip"), chipStreak = $("streakChip"), chipOverheat = $("overheatChip");
+  const questRow = $("questRow"), questTag = $("questTag"), questName = $("questName");
+  const questProg = $("questProg"), questFill = $("questFill"), questTime = $("questTime");
+  const btnOrderYes = $("btnOrderYes"), btnOrderNo = $("btnOrderNo");
 
   // 安全区（刘海 / 底部指示条）：用一个隐藏探针实测，比读自定义属性可靠。
-  // 这份数值由 JS 统一写进 CSS 变量，CSS 只负责落地 —— 只扣一次，不重复扣。
   let safeProbe = null;
   function safeInsets() {
     try {
@@ -445,7 +811,15 @@
   }
   function idleTicker() {
     const m = game.modifierDef();
-    return "机台 · " + m.name + (game.paused ? " · 推板已暂停" : " · 推板运行中");
+    const bits = ["机台 · " + m.name];
+    if (game.paused) bits.push("推板已暂停");
+    if (game.overheatT > 0) bits.push("过热 " + game.overheatT.toFixed(1) + "s");
+    if (game.congest > 0.02) bits.push("拥堵 " + Math.round(game.congest * 100) + "%");
+    if (game.streakT > 0) bits.push("漏币中");
+    if (game.orderOffering()) bits.push("有订单待接");
+    else if (game.orderActive()) bits.push("订单进行中");
+    if (bits.length === 1) bits.push("推板运行中");
+    return bits.join(" · ");
   }
 
   function toast(text, cls, emoji) {
@@ -485,6 +859,12 @@
     hudPrev[key] = v;
     el.setAttribute(name, v);
   }
+  function setClass(el, key, v) {
+    if (!el) return;
+    if (hudPrev[key] === v) return;
+    hudPrev[key] = v;
+    el.className = v;
+  }
 
   function refreshHud(force) {
     if (!game) return;
@@ -510,10 +890,17 @@
     setAttr(btnPause, "title", "暂停/继续推板（快捷键 P）");
 
     // 救济金按钮：只在真的走投无路时出现
-    const need = game.needBailout();
-    setBool(btnBailout, "hidden", !need);
+    setBool(btnBailout, "hidden", !game.needBailout());
 
-    // 容量条搬进 HUD：它是全局状态，不该挤在台面底部
+    // 超频：就绪 / 超频中 / 冷却，三态一目了然
+    const hotReady = game.hotReady() && st.credits >= D.HOT.cost;
+    if (game.hotActive()) setText(elHotLv, game.hotLeft().toFixed(1) + "s");
+    else if (!game.hotReady()) setText(elHotLv, "冷 " + Math.ceil(game.hotCdLeft()) + "s");
+    else setText(elHotLv, st.credits >= D.HOT.cost ? "就绪" : "缺 " + D.HOT.cost);
+    setBool(btnHot, "disabled", !hotReady);
+    setAttr(btnHot, "aria-pressed", game.hotActive() ? "true" : "false");
+
+    // 容量条
     const w = game.world;
     const ratio = Math.min(1, w.coins.length / w.maxCoins);
     const lvl = ratio > 0.9 ? "red" : ratio > 0.7 ? "warn" : "ok";
@@ -522,9 +909,49 @@
       hudPrev.capFill = ratio;
       elCapFill.style.width = (ratio * 100).toFixed(1) + "%";
     }
-    if (hudPrev.capLvl !== lvl) {
-      hudPrev.capLvl = lvl;
-      elCap.className = "cap " + lvl;
+    setClass(elCap, "capLvl", "cap " + lvl);
+
+    // 状态 chips：把"正在被惩罚"这件事显式告诉玩家
+    setBool(chipCongest, "hidden", game.congest <= 0.02);
+    if (game.congest > 0.02) setText(chipCongest, "拥堵 " + Math.round(game.congest * 100) + "%");
+    setBool(chipStreak, "hidden", game.streakT <= 0);
+    setBool(chipOverheat, "hidden", game.overheatT <= 0);
+    if (game.overheatT > 0) setText(chipOverheat, "过热 " + game.overheatT.toFixed(1) + "s");
+
+    refreshQuest();
+  }
+
+  /* ---------------- 限时订单 UI ---------------- */
+  function refreshQuest() {
+    const o = game.order;
+    if (!o) { setBool(questRow, "hidden", true); return; }
+    setBool(questRow, "hidden", false);
+    const def = o.def;
+    /* 目标 / 赏 / 罚一律读**订单对象上的值**（offerOrder 时按玩家产能算好并存下来），
+     * 不再去读 def —— def 里现在只有 ask / pay 这种规则参数，没有具体数字。 */
+    if (o.phase === "offer") {
+      setClass(questTag, "questTagCls", "quest-tag offer");
+      setText(questTag, "新订单");
+      setText(questName, def.name);
+      setText(questProg, "目标 " + o.target + def.unit + " · 赏 " + D.fmt(o.reward) + " · 罚 " + D.fmt(o.penalty));
+      questFill.style.width = "100%";
+      questFill.style.background = "linear-gradient(90deg,#ffd863,#e09a12)";
+      setText(questTime, o.t.toFixed(1) + "s");
+      setBool(btnOrderYes, "hidden", false);
+      setBool(btnOrderNo, "hidden", false);
+    } else {
+      setClass(questTag, "questTagCls", "quest-tag run");
+      setText(questTag, "进行中");
+      setText(questName, def.name);
+      setText(questProg, Math.min(o.prog, o.target) + "/" + o.target + def.unit + " · 赏 " + D.fmt(o.reward));
+      const pr = Math.min(1, o.prog / Math.max(1, o.target));
+      questFill.style.width = (pr * 100).toFixed(1) + "%";
+      questFill.style.background = pr >= 1
+        ? "linear-gradient(90deg,#5ce68a,#2fae5e)"
+        : "linear-gradient(90deg,#4ee2ff,#3a8fe0)";
+      setText(questTime, o.t.toFixed(1) + "s");
+      setBool(btnOrderYes, "hidden", true);
+      setBool(btnOrderNo, "hidden", true);
     }
   }
 
@@ -544,23 +971,25 @@
       const e = evts[i];
       if (e.type === "drop") {
         Sfx.insert();
-        Fx.ring(e.x == null ? W / 2 : e.x, game.world.dropZone.y1, "rgba(255,204,77,.5)");
+        const z = game.world.dropZone;
+        Fx.ring(P.projectX(e.x == null ? W / 2 : e.x, z.y1), z.y1, "rgba(255,204,77,.5)");
       } else if (e.type === "pay") {
         const def = D.COIN_DEFS[e.kind];
+        const px = P.projectX(e.x, e.y), py = P.projectY(e.y, 0);
         Sfx.pay(e.combo);
-        Fx.burst(e.x, e.y - 12, def.glow, 10, Math.PI * 2, 150);
+        Fx.burst(px, py - 12, def.glow, 10, Math.PI * 2, 150);
         if (e.gain > 0) {
-          Fx.text(e.x, e.y - 20, "+" + e.gain, e.mul > 1 ? "#ffe9a8" : "#d8ffe6", e.mul >= 2 ? 19 : 15);
-        } else if (e.kind === "chest") {
-          // 宝箱走自己的反馈，不再共用 payout 通道飘出一个 "+0"
-          Fx.text(e.x, e.y - 20, "宝箱！", "#e39bff", 17);
+          Fx.text(px, py - 20, "+" + e.gain, e.mul > 1 ? "#ffe9a8" : "#d8ffe6", e.mul >= 2 ? 19 : 15);
+        } else if (def.jackpot || def.tower) {
+          Fx.text(px, py - 20, def.name + "！", def.glow, 17);
         }
         if (e.crit) {
-          Fx.text(e.x + 12, e.y - 34, "暴击!", "#ff8ad8", 14);
-          Fx.ring(e.x, e.y - 12, "rgba(255,94,196,.85)");
+          Fx.text(px + 12, py - 34, "暴击!", "#ff8ad8", 14);
+          Fx.ring(px, py - 12, "rgba(255,94,196,.85)");
         }
+        if (e.hot) Fx.text(px - 14, py - 34, "×2", "#4ee2ff", 13);
         const lab = D.tierLabel(e.combo);
-        if (e.mul >= 2) Fx.ring(e.x, e.y - 12, "rgba(255,233,168,.8)");
+        if (e.mul >= 2) Fx.ring(px, py - 12, "rgba(255,233,168,.8)");
         // 徽章只在"跨档"时弹：不再每掉一枚币都弹一次
         if (lab && lab !== lastTierShown) {
           lastTierShown = lab;
@@ -569,22 +998,80 @@
         } else if (!lab) {
           lastTierShown = "";
         }
+        // 稀有奖励：星尘 + 拾取横幅，和普通币彻底区分开
+        if (def.hero) {
+          Fx.stardust(px, py, def.glow, def.art === "disc" ? 8 : 16);
+          if (def.art !== "disc") showHero(def.name, def.glow, "推落！");
+        }
         if (e.gem) {
-          Fx.burst(e.x, e.y - 12, "#7ce8ff", 16, Math.PI * 2, 200);
+          Fx.burst(px, py - 12, "#7ce8ff", 16, Math.PI * 2, 200);
           log("钻石币掉落 → 钻石 +" + e.gem, "good");
         }
         if (e.ticket) log("幸运币掉落 → 抽奖券 +" + e.ticket, "good");
       } else if (e.type === "gutter") {
         Sfx.gutter();
-        Fx.burst(e.x, e.y - 10, "#ff6b6b", 6, Math.PI, 110);
+        Fx.burst(P.projectX(e.x, e.y), P.projectY(e.y, 0) - 10, "#ff6b6b", 6, Math.PI, 110);
       } else if (e.type === "jackpot") {
         Sfx.jackpot();
         Fx.shakeIt(12);
         Fx.burst(W / 2, 300, "#ffcc4d", 60, Math.PI * 2, 340);
-        showJackpot();
+        showJackpot("JACKPOT!");
         log("★ JACKPOT ★ 宝箱开启，额外 +" + D.fmt(e.bonus) + " 金币，并撒下 " + e.coins + "/" + e.total + " 枚币" +
           (e.refund ? "（台面已满，折算补偿 +" + D.fmt(e.refund) + "）" : "") + "！", "big");
         toast("JACKPOT +" + D.fmt(e.bonus), "win", "🎉");
+      } else if (e.type === "tower") {
+        Sfx.tower();
+        Fx.shakeIt(14);
+        Fx.burst(W / 2, 320, "#ffd75e", 70, Math.PI * 2, 360);
+        Fx.stardust(W / 2, 320, "rgba(255,215,94,.9)", 40);
+        showJackpot("TOWER!");
+        showHero("金币塔", "rgba(255,215,94,.95)", "+" + D.fmt(e.bonus));
+        log("▲ 金币塔落成 ▲ 额外 +" + D.fmt(e.bonus) + " 金币，并撒下 " + e.coins + "/" + e.total + " 枚币" +
+          (e.refund ? "（台面已满，折算补偿 +" + D.fmt(e.refund) + "）" : "") + "！", "big");
+        toast("金币塔 +" + D.fmt(e.bonus), "win", "🏰");
+      } else if (e.type === "burst") {
+        Sfx.burst();
+        Fx.shakeIt(8);
+        for (const d of (e.drop || [])) {
+          const def = D.COIN_DEFS[d.kind] || D.COIN_DEFS.copper;
+          Fx.burst(P.projectX(d.x, d.y), P.projectY(d.y, 0), def.glow, 8, Math.PI, 130);
+        }
+        log("⚠ 台面挤爆！" + e.n + " 枚币被挤进角沟（防爆护栏可以减少损失）", "bad");
+        ticker("台面爆仓 · 先推落一些币，或升级「排风马达 / 防爆护栏」", true);
+        toast("爆仓 −" + e.n + " 枚", "bad", "⚠");
+      } else if (e.type === "streak") {
+        Sfx.streak();
+        log("⚠ 连续掉沟，机台开始「漏币」：角沟临时变宽 " + Math.round((D.STREAK.mul - 1) * 100) + "%（" + D.STREAK.dur + "s）", "bad");
+        ticker("漏币中 · 角沟变宽，先稳住落点", true);
+      } else if (e.type === "hot") {
+        Sfx.hot();
+        Fx.ring(W / 2, 320, "rgba(78,226,255,.9)");
+        log("⚡ 超频启动：8 秒内产出 ×" + D.HOT.mul + "、推板加速 ×" + D.HOT.speed + "（花费 " + e.cost + "）", "sys");
+        toast("超频启动 ×" + D.HOT.mul, "win", "⚡");
+      } else if (e.type === "orderOffer") {
+        Sfx.orderOffer();
+        log("📋 新订单「" + e.name + "」：目标 " + e.target + e.unit + " · 赏 " + D.fmt(e.reward) +
+          " · 罚 " + D.fmt(e.penalty) + "（" + e.t.toFixed(0) + " 秒内决定，不接不算失败）", "sys");
+        ticker("有订单待接 · 接不接由你决定", false);
+      } else if (e.type === "orderStart") {
+        log("✅ 接下订单「" + e.name + "」：目标 " + e.target + "，" + e.t.toFixed(0) + " 秒内完成", "sys");
+      } else if (e.type === "orderDecline") {
+        log("订单「" + e.name + "」已放弃（不算失败，无罚金）", "sys");
+      } else if (e.type === "orderExpire") {
+        ticker("订单提议已收回", false);
+      } else if (e.type === "orderDone") {
+        Sfx.orderDone();
+        Fx.shakeIt(6);
+        showHero("订单完成", "rgba(92,230,138,.95)", "+" + D.fmt(e.reward));
+        log("🏅 订单达成「" + e.name + "」：" + e.prog + "/" + e.target + " → 赏金 +" + D.fmt(e.reward), "good");
+        toast("订单达成 +" + D.fmt(e.reward), "ach", "🏅");
+      } else if (e.type === "orderFail") {
+        Sfx.orderFail();
+        Fx.shakeIt(9);
+        log("❌ 订单失败「" + e.name + "」：" + e.prog + "/" + e.target +
+          " → 罚金 −" + D.fmt(e.penalty) + "，机台过热 " + e.overheat + " 秒（推板减速）", "bad");
+        toast("订单失败 −" + D.fmt(e.penalty), "bad", "❌");
+        ticker("订单失败 · 机台过热中", true);
       } else if (e.type === "ach") {
         for (const id of e.list) {
           const a = D.ACHIEVEMENTS.find((x) => x.id === id);
@@ -620,17 +1107,13 @@
         ticker(idleTicker(), false);
       } else if (e.type === "deny") {
         throttledDeny();
-        if (e.id === "insert") {
-          ticker("金币不足 · 领救济金或等机台赠送", true);
-        } else if (e.id === "lottery") {
-          ticker("抽奖需要 5 张券（当前 " + game.st.tickets + " 张）", true);
-        } else if (e.id === "prestige") {
-          ticker("换机台需要累计收益 " + D.fmt(game.prestigeNeed()) + " ◎", true);
-        } else {
-          ticker("条件不满足", true);
-        }
+        if (e.id === "insert") ticker("金币不足 · 领救济金或等机台赠送", true);
+        else if (e.id === "lottery") ticker("抽奖需要 5 张券（当前 " + game.st.tickets + " 张）", true);
+        else if (e.id === "prestige") ticker("换机台需要累计收益 " + D.fmt(game.prestigeNeed()) + " ◎", true);
+        else if (e.id === "hot") ticker("超频冷却中，或金币不足 " + D.HOT.cost + " ◎", true);
+        else ticker("条件不满足", true);
       } else if (e.type === "full") {
-        ticker("台面满了！先推落一些币吧", true);
+        ticker("台面满了！再塞会爆仓，先推落一些币", true);
       }
     }
   }
@@ -643,10 +1126,17 @@
     comboTimer = 0.85;
   }
   let jpTimer = 0;
-  function showJackpot() {
-    elJackpot.innerHTML = "<span>JACKPOT!</span>";
+  function showJackpot(text) {
+    elJackpot.innerHTML = "<span>" + esc(text || "JACKPOT!") + "</span>";
     elJackpot.classList.add("on");
     jpTimer = 2.0;
+  }
+  let heroTimer = 0;
+  function showHero(name, color, sub) {
+    elHero.innerHTML = '<span class="hn" style="color:' + color + '">' + esc(name) + "</span>" +
+      (sub ? '<small style="color:' + color + '">' + esc(sub) + "</small>" : "");
+    elHero.classList.add("on");
+    heroTimer = 1.6;
   }
 
   /* ---------------- 主循环 ---------------- */
@@ -656,6 +1146,7 @@
     let dt = (t - lastT) / 1000;
     lastT = t;
     if (dt > 0.25) dt = 0.25;
+    nowT += dt;
 
     acc += dt;
     let guard = 0;
@@ -668,6 +1159,7 @@
 
     if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) elCombo.classList.remove("on"); }
     if (jpTimer > 0) { jpTimer -= dt; if (jpTimer <= 0) elJackpot.classList.remove("on"); }
+    if (heroTimer > 0) { heroTimer -= dt; if (heroTimer <= 0) elHero.classList.remove("on"); }
     if (tickerTimer > 0) {
       tickerTimer -= dt;
       if (tickerTimer <= 0) {
@@ -685,10 +1177,15 @@
     if (saveAcc > 10) { saveAcc = 0; game.save(); }
   }
 
-  /* ---------------- 输入 ---------------- */
-  function canvasX(clientX) {
+  /* ---------------- 输入 ----------------
+   * 台面现在有透视：屏幕 x 不能直接当台面 x 用。
+   * 反过来解算到「落点那一行」的台面坐标，玩家点哪条通道就落哪条通道。 */
+  function boardXFromClient(clientX) {
     const r = cv.getBoundingClientRect();
-    return (clientX - r.left) / r.width * W;
+    const sx = (clientX - r.left) / r.width * W;
+    const y = game.world.dropZone.yMid;
+    const k = P.kAt(y);
+    return W / 2 + (sx - W / 2) / k;
   }
   function doDrop(x) {
     Sfx.ensure();
@@ -697,14 +1194,14 @@
   }
 
   cv.addEventListener("pointermove", (e) => {
-    hoverX = canvasX(e.clientX);
+    hoverX = boardXFromClient(e.clientX);
     hasHover = true;
   });
   cv.addEventListener("pointerleave", () => { hasHover = false; });
   cv.addEventListener("pointercancel", () => { hasHover = false; });
   cv.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    hoverX = canvasX(e.clientX);
+    hoverX = boardXFromClient(e.clientX);
     hasHover = true;
     doDrop(hoverX);
   });
@@ -715,6 +1212,12 @@
     game.st.auto = !game.st.auto;
     log(game.st.auto ? "自动投币机已启动（Lv" + game.autoLvl() + "）" : "自动投币机已关闭", "sys");
     ticker(game.st.auto ? "自动投币中…" : "已停止自动投币");
+    refreshHud();
+  });
+  btnHot.addEventListener("click", () => {
+    Sfx.ensure();
+    game.useHot();
+    handleEvents();
     refreshHud();
   });
   btnLottery.addEventListener("click", () => {
@@ -731,6 +1234,17 @@
   btnBailout.addEventListener("click", () => {
     Sfx.ensure();
     if (game.needBailout()) game.bailout();
+    handleEvents();
+    refreshHud();
+  });
+  btnOrderYes.addEventListener("click", () => {
+    Sfx.ensure();
+    game.acceptOrder();
+    handleEvents();
+    refreshHud();
+  });
+  btnOrderNo.addEventListener("click", () => {
+    game.declineOrder();
     handleEvents();
     refreshHud();
   });
@@ -765,6 +1279,8 @@
       doDrop(hasHover ? hoverX : W / 2);
     } else if (e.key === "a" || e.key === "A") {
       if (!btnAuto.disabled) btnAuto.click();
+    } else if (e.key === "h" || e.key === "H") {
+      if (!btnHot.disabled) btnHot.click();
     } else if (e.key === "l" || e.key === "L") {
       if (!btnLottery.disabled) btnLottery.click();
     } else if (e.key === "p" || e.key === "P") {
@@ -927,6 +1443,11 @@
       ["最高连击", D.fmt(t.bestCombo) + " 枚"],
       ["单次最高收益", D.fmt(t.bestPayout) + " ◎"],
       ["宝箱次数", D.fmt(t.jackpots)],
+      ["金币塔次数", D.fmt(t.towers || 0)],
+      ["订单完成 / 失败", D.fmt(t.ordersDone || 0) + " / " + D.fmt(t.ordersFailed || 0)],
+      ["爆仓次数", D.fmt(t.bursts || 0)],
+      ["漏币连锁次数", D.fmt(t.streaks || 0)],
+      ["超频使用次数", D.fmt(t.hotUses || 0)],
       ["救济金次数", D.fmt(t.bailouts)],
       ["满台折算补偿", D.fmt(t.refunds) + " ◎"],
       ["换机台层数", D.fmt(game.st.prestige || 0)],
@@ -940,24 +1461,43 @@
       const def = D.COIN_DEFS[id];
       h += '<span class="k">' + def.name + "</span><span class=\"v\">" + D.fmt(t.kinds[id] || 0) + "</span>";
     }
-    // 概率公开：抽奖奖池直接读代码里那张表，不会出现"公示概率和实现不一致"
+    // 概率公开：直接读代码里那张表，不会出现"公示概率和实现不一致"
     h += '</div><div class="sep"></div><p class="h">抽奖概率（' + D.LOTTERY_TICKET_COST + ' 张券 / 次）</p><div class="stat-grid">';
     for (const row of D.LOTTERY_TABLE) {
       h += '<span class="k">' + row.label + "</span><span class=\"v\">" + Math.round(row.p * 100) + "%</span>";
     }
-    h += '<span class="k">连击判定</span><span class="v">' + D.COMBO_WINDOW + "s 内推落 " + D.COMBO_TIERS.map((t) => t.n).join("/") +
-      " 枚 → ×" + D.COMBO_TIERS.map((t) => t.mul).join("/") + "（滑动窗口计数）</span>";
+    h += '<span class="k">连击判定</span><span class="v">' + D.COMBO_WINDOW + "s 内推落 " + D.COMBO_TIERS.map((x) => x.n).join("/") +
+      " 枚 → ×" + D.COMBO_TIERS.map((x) => x.mul).join("/") + "（滑动窗口计数）</span>";
     h += '<span class="k">暴击芯片</span><span class="v">每级 +10% 概率触发 ×' + D.CRIT_MULT + "（满级 30%）</span>";
     h += '<span class="k">宝箱出现率</span><span class="v">' +
       (D.chestChance(game.upLevel("luck") + game.modifierDef().luck) * 100).toFixed(2) +
       "% / 次补给（冷却 " + D.CHEST.cooldown + "s）</span>";
+    h += '<span class="k">金币塔出现率</span><span class="v">' +
+      (D.towerChance(game.upLevel("luck") + game.modifierDef().luck) * 100).toFixed(2) +
+      "% / 次补给（冷却 " + D.TOWER.cooldown + "s）</span>";
+    h += "</div><div class=\"sep\"></div><p class=\"h\">惩罚与风险机制</p><div class=\"stat-grid\">";
+    h += '<span class="k">拥堵</span><span class="v">台面超 ' + Math.round(D.CONGESTION.warn * 100) +
+      "% 起推板减速，满台最多 −" + Math.round(D.CONGESTION.speedLoss * 100) + "%（当前 −" +
+      Math.round(game.congest * D.CONGESTION.speedLoss * 100) + "%）</span>";
+    h += '<span class="k">爆仓</span><span class="v">满台后硬塞 ' + D.CONGESTION.burstAt + " 次挤掉 " +
+      Math.max(1, D.CONGESTION.burstCoins - game.upLevel("guard")) + " 枚币（防爆护栏 Lv" + game.upLevel("guard") + "）</span>";
+    h += '<span class="k">漏币连锁</span><span class="v">' + D.STREAK.window + "s 内掉沟 " + D.STREAK.n +
+      " 次 → 角沟 ×" + D.STREAK.mul + " 宽，持续 " + D.STREAK.dur + "s</span>";
+    h += '<span class="k">限时订单</span><span class="v">首次 ' + D.ORDER.first + "s，之后每 " + D.ORDER.every +
+      "s 提议一次，" + D.ORDER.expire + "s 内决定；不接不算失败</span>";
+    h += '<span class="k">订单失败惩罚</span><span class="v">罚金（按订单）+ 机台过热 ' + D.OVERHEAT.dur +
+      "s（推板 ×" + D.OVERHEAT.mul + "）</span>";
+    h += '<span class="k">超频</span><span class="v">花 ' + D.HOT.cost + " ◎ 换 " + D.HOT.dur +
+      "s 产出 ×" + D.HOT.mul + " + 推板 ×" + D.HOT.speed + "，冷却 " + D.HOT.readyEvery + "s（手动触发）</span>";
     h += "</div><div class=\"sep\"></div>" +
       '<div class="card"><div class="top"><span class="icon">?</span><span class="name">玩法速记</span></div>' +
       '<div class="desc">点击台面任意位置投币，币会落到推板前方。<br>' +
       "推板往复把币往前推，掉进最前方的出币口就是收益，掉进左右两角的黑槽会丢币。<br>" +
-      "连续推落会累积连击倍率（连得越高窗口越短）；宝箱币推落后触发 JACKPOT。<br>" +
+      "连续推落会累积连击倍率；宝箱触发 JACKPOT，金币塔是更稀有的大奖。<br>" +
+      "<b>惩罚线</b>：台面超过 80% 会拥堵（推板变慢），满台还硬塞会爆仓；连续掉沟会触发漏币连锁。<br>" +
+      "<b>风险线</b>：机台会不定时给出限时订单，接下并达标拿重赏，失败要罚金 + 过热。<br>" +
       "金币见底时机台会自动赠送救济金，也可以点「领救济金」立刻领取。<br>" +
-      "快捷键：空格投币 / A 自动 / L 抽奖 / P 暂停推板 / Esc 关闭面板。</div></div>";
+      "快捷键：空格投币 / A 自动 / H 超频 / L 抽奖 / P 暂停推板 / Esc 关闭面板。</div></div>";
     return h;
   }
 
@@ -1007,8 +1547,7 @@
     // 注入可播种 RNG：引擎里所有随机都走同一条通道，测试才可复现
     game = E.createGame({ rng: D.makeRng(((Math.random() * 0xffffffff) >>> 0)) });
 
-    // 先尝试读档，再决定要不要撒开场币 ——
-    // 不再出现"建对象时撒 170 枚 + boot 又撒一次 = 237/260 开局爆红"
+    // 先尝试读档，再决定要不要撒开场币
     const loaded = game.load();
     if (!loaded) {
       game.seedField(170, 2);
@@ -1038,7 +1577,7 @@
     });
 
     // 调试钩子
-    window.__CP = { game: game, Fx: Fx, Sfx: Sfx, render: render, layout: L, fit: fit, modeOf: () => mode };
+    window.__CP = { game: game, Fx: Fx, Sfx: Sfx, render: render, layout: L, project: P, fit: fit, modeOf: () => mode };
 
     requestAnimationFrame(frame);
   }

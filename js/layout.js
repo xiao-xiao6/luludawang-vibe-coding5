@@ -25,9 +25,9 @@
   const CAB_PAD = 12;          // .cab 内边距
   const PAGE_PAD = { wide: 18, stack: 10, narrow: 10, compact: 8 };
   const MAX_CAB = { wide: 520, stack: 600, narrow: 600, compact: 9999 };
-  // 机柜内「除台面外」占掉的纵向高度（页边距 + HUD + 操作区 + 状态条）的保守估计
+  // 机柜内「除台面外」占掉的纵向高度（页边距 + HUD + 订单条 + 操作区 + 状态条）的保守估计
   // compact 档的 HUD / 操作区都在右侧列里，几乎不占台面的纵向空间
-  const CHROME = { wide: 250, stack: 250, narrow: 300, compact: 64 };
+  const CHROME = { wide: 300, stack: 300, narrow: 360, compact: 64 };
 
   const MODES = ["wide", "stack", "narrow", "compact"];
 

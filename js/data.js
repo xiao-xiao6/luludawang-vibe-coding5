@@ -7,44 +7,49 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  /* 币种。r/mass 影响物理手感，value 是掉出前沿的收益，cost 是投币成本 */
+  /* 币种。r/mass 影响物理手感，value 是掉出前沿的收益，cost 是投币成本。
+   *
+   * art / halo / hero 是**纯表现层元数据**，物理与经济完全不读它们：
+   *   art  = disc（硬币圆片）| gem（棱面钻石）| chest（伪3D 宝箱）| tower（伪3D 金币塔）
+   *   halo = 稀有奖励的脉冲光晕色（null = 普通币不发光晕）
+   *   hero = 是否走「稀有奖励」的强化表现（光晕 / 星尘 / 拾取横幅） */
   const COIN_DEFS = {
     copper: {
       id: "copper", name: "铜币", glyph: "¢", r: 11, mass: 1, value: 1, cost: 1,
       color: "#c8813a", color2: "#f4c286", ring: "#7a4520", glow: "#ffb066",
-      rarity: "普通"
+      rarity: "普通", art: "disc", halo: null, hero: false
     },
     silver: {
       id: "silver", name: "银币", glyph: "✧", r: 11, mass: 1.35, value: 3, cost: 3,
       color: "#96a3b4", color2: "#eaf2fb", ring: "#5b6676", glow: "#cfe2f7",
-      rarity: "常见"
+      rarity: "常见", art: "disc", halo: null, hero: false
     },
     gold: {
       id: "gold", name: "金币", glyph: "★", r: 12, mass: 1.9, value: 10, cost: 10,
       color: "#d8a51f", color2: "#ffe98a", ring: "#8a6410", glow: "#ffd75e",
-      rarity: "稀有"
+      rarity: "稀有", art: "disc", halo: "rgba(255,215,94,.55)", hero: true
     },
     diamond: {
       id: "diamond", name: "钻石币", glyph: "◆", r: 12, mass: 1.6, value: 25, cost: 25, gem: 1,
       color: "#37c2e6", color2: "#cbf5ff", ring: "#1a6b85", glow: "#7ce8ff",
-      rarity: "史诗"
+      rarity: "史诗", art: "gem", halo: "rgba(124,232,255,.7)", hero: true
     },
     lucky: {
       id: "lucky", name: "幸运币", glyph: "✚", r: 11, mass: 1.0, value: 2, cost: 2, ticket: 1,
       color: "#46c877", color2: "#d4ffe6", ring: "#1f7a41", glow: "#7dffab",
-      rarity: "稀有"
+      rarity: "稀有", art: "disc", halo: "rgba(125,255,171,.5)", hero: true
     },
     chest: {
       id: "chest", name: "宝箱", glyph: "?", r: 17, mass: 3.2, value: 0, cost: 0, jackpot: 1,
       color: "#a94bdd", color2: "#f2d2ff", ring: "#5a1d7a", glow: "#e39bff",
-      rarity: "传说"
+      rarity: "传说", art: "chest", halo: "rgba(227,155,255,.8)", hero: true
     },
-    /* 金币塔：比宝箱更稀有的传说奖励。推落后会在台面上垒起一座金币塔，
-     * 并且立刻结算一大笔现金 —— 是「看得见的大奖」。 */
+    /* 金币塔：比宝箱更稀有的传说奖励。推落后立刻结算一大笔现金 +
+     * 撒下一批币 —— 是「看得见的大奖」，也是限时订单之外的长线目标。 */
     tower: {
       id: "tower", name: "金币塔", glyph: "▲", r: 16, mass: 3.0, value: 0, cost: 0, tower: 1,
       color: "#e8940f", color2: "#ffe9a8", ring: "#7a4a06", glow: "#ffd75e",
-      rarity: "传说"
+      rarity: "传说", art: "tower", halo: "rgba(255,215,94,.9)", hero: true
     }
   };
   const COIN_ORDER = ["copper", "silver", "gold", "diamond", "lucky", "chest", "tower"];
@@ -86,6 +91,7 @@
     { id: "vent", name: "排风马达", desc: "拥堵带来的减速 -34%/级（满级几乎免疫）", max: 3, base: 240, growth: 1.9, icon: "≋" },
     { id: "guard", name: "防爆护栏", desc: "爆仓时少被挤掉 1 枚币/级", max: 3, base: 280, growth: 1.95, icon: "▣" }
   ];
+  /* 8 项基础升级 + 2 项惩罚对策 = 10 项；成就里的「满配机台」按 UPGRADES.length 全量校验 */
 
   /* 钻石升级（稀缺货币，效果更强） */
   const GEM_UPGRADES = [
@@ -115,12 +121,14 @@
     { id: "combo30", name: "极限爆发", desc: "0.9 秒内推落 30 枚（UNREAL 档）", check: (s) => s.totals.bestCombo >= 30 },
     { id: "drop10k", name: "万台推落", desc: "累计推落 10000 枚币", check: (s) => s.totals.paid >= 10000 },
     { id: "earn100k", name: "推币大亨", desc: "累计收益 100000 金币", check: (s) => s.totals.earned >= 100000 },
-    { id: "allmax", name: "满配机台", desc: "8 项金币升级全部升满", check: (s) => UPGRADES.every((u) => (s.upgrades[u.id] || 0) >= u.max) },
+    { id: "allmax", name: "满配机台", desc: "10 项金币升级全部升满", check: (s) => UPGRADES.every((u) => (s.upgrades[u.id] || 0) >= u.max) },
     { id: "prestige1", name: "换台重生", desc: "完成 1 次换机台", check: (s) => (s.prestige || 0) >= 1 },
     /* ---- 新玩法（惩罚 / 风险 / 大奖）的收集目标 ---- */
     { id: "tower1", name: "金币塔落成", desc: "推落 1 座金币塔", check: (s) => (s.totals.towers || 0) >= 1 },
     { id: "order5", name: "接单达人", desc: "完成 5 个限时订单", check: (s) => (s.totals.ordersDone || 0) >= 5 },
+    { id: "orderfail1", name: "愿赌服输", desc: "经历 1 次订单失败（罚金 + 过热）", check: (s) => (s.totals.ordersFailed || 0) >= 1 },
     { id: "overflow1", name: "爆仓教训", desc: "经历 1 次爆仓（台面挤爆）", check: (s) => (s.totals.bursts || 0) >= 1 },
+    { id: "streak1", name: "漏了个大洞", desc: "触发 1 次漏币连锁", check: (s) => (s.totals.streaks || 0) >= 1 },
     { id: "hot10", name: "超频狂人", desc: "使用 10 次超频", check: (s) => (s.totals.hotUses || 0) >= 10 }
   ];
 
@@ -188,10 +196,13 @@
   /* ---------------- 拥堵 / 爆仓（失败机制第一层）
    * 台面越满，推板越推不动：堆着不推 = 效率暴跌；
    * 满到 100% 还会被「挤爆」，前沿的币直接被挤进角沟。
-   * 对策是排风马达 + 防爆护栏，以及玩家自己把币推下去。 */
+   * 对策是排风马达 + 防爆护栏，以及玩家自己把币推下去。
+   *
+   * 阈值定在 88%：实测正常游玩（持续投币）稳态会落在 85~92%，
+   * 所以拥堵是「推得越猛越明显」的动态压力，而不是一开局就常驻的固定税。 */
   const CONGESTION = {
-    warn: 0.80,       // 超过容量 80% 进入拥堵
-    speedLoss: 0.30,  // 完全拥堵时推板速度 -30%
+    warn: 0.88,       // 超过容量 88% 进入拥堵
+    speedLoss: 0.24,  // 完全拥堵时推板速度 -24%
     burstAt: 10,      // 满台后硬塞多少次触发爆仓
     burstCoins: 2,    // 每次爆仓挤掉的枚数
     ventRelief: 0.34  // 排风马达每级抵消的拥堵比例
@@ -221,14 +232,36 @@
 
   /* ---------------- 订单（风险目标 = 失败机制第三层）
    * 机台会不定时给出一个限时订单，玩家自己决定接不接。
-   * 接了：达标拿重赏；没达标：罚金 + 机台过热（推板减速 12 秒）。 */
+   * 接了：达标拿重赏；没达标：罚金 + 机台过热（推板减速 12 秒）。
+   *
+   * **目标是自适应的**：按玩家最近一段时间的真实产出（指数滑动平均）
+   * 反推，所以初始机台不会收到根本做不完的单，满配机台也不会收到
+   * 随手就能过的白送单。ask = 要求你拿出近期速度的几成；
+   * pay = 赏金相对于「这段时间本来能赚多少」的倍数。
+   *
+   * 节奏参数独立放这里，UI 直接读同一份，不会出现"公示节奏和实现不一致"。
+   * 不接 = 不算失败（提议到期自动收回），只有接了没做到才罚。 */
+  const ORDER = { first: 14, every: 48, expire: 9, ema: 22 };
   const OVERHEAT = { dur: 12, mul: 0.72 };
+  /* basis 决定目标怎么算：
+   *   pays  → 推落枚数；gems → 推落钻石币；combo → 连击；clean → 连续不掉沟枚数
+   * ask  → 要求你拿出近期速度的几成（越低越容易）
+   * pay  → 赏金相对「这段时间本来能赚多少」的倍数
+   * min/max 夹紧目标，floor 是产能过低时的赏金兼底。 */
   const ORDERS = [
-    { id: "rush", name: "急速推落", unit: "枚", time: 24, target: 18, reward: 210, penalty: 80 },
-    { id: "combo", name: "连击挑战", unit: "连击", time: 20, target: 10, reward: 260, penalty: 100 },
-    { id: "gem", name: "钻石订单", unit: "枚钻石币", time: 26, target: 2, reward: 320, penalty: 120 },
-    { id: "clean", name: "零失误", unit: "枚不掉沟", time: 22, target: 16, reward: 190, penalty: 70 }
+    { id: "rush", name: "急速推落", unit: "枚", time: 24, basis: "pays", ask: 0.75, pay: 1.2, min: 6, max: 160, floor: 60 },
+    { id: "combo", name: "连击挑战", unit: "连击", time: 20, basis: "combo", ask: 0.9, pay: 1.0, min: 5, max: 45, floor: 130 },
+    { id: "gem", name: "钻石订单", unit: "枚钻石币", time: 32, basis: "gems", ask: 0.5, pay: 1.1, min: 1, max: 10, floor: 150 },
+    { id: "clean", name: "零失误", unit: "枚连击不掉沟", time: 22, basis: "clean", ask: 0.4, pay: 0.9, min: 5, max: 60, floor: 90 }
   ];
+  /** 赏金相对于「这段时间本来能赚多少」的倍数；罚金 = 赏金 × 这个比例 */
+  const ORDER_PENALTY_RATIO = 0.45;
+  /** 订单可行性下限：预期产出低于这个量就不出这种单（不给玩家做不完的任务）。
+   * 宝石订单单独用 ORDER_GEM_FEASIBLE：钻石币的产出在机台之间差了上百倍，
+   * 所以要求「这段时间的期望钻石数」达到 1.5 枚才派单 ——
+   * 初始机台（几乎不产钻石）永远收不到，满配机台（期望 2~5 枚）才收得到。 */
+  const ORDER_FEASIBLE = 1.0;
+  const ORDER_GEM_FEASIBLE = 1.5;
 
   /* ---------------- 计算 ---------------- */
   function tierMul(count) {
@@ -283,7 +316,7 @@
     LOTTERY_TABLE, LOTTERY_TICKET_COST,
     MODIFIERS, modById, rollModifier, PRESTIGE,
     REFILL, CHEST, chestChance,
-    CONGESTION, STREAK, TOWER, towerChance, HOT, OVERHEAT, ORDERS,
+    CONGESTION, STREAK, TOWER, towerChance, HOT, OVERHEAT, ORDERS, ORDER, ORDER_PENALTY_RATIO, ORDER_FEASIBLE, ORDER_GEM_FEASIBLE,
     mulFor, tierMul, tierLabel, tierRank, CRIT_MULT, critChance,
     upCost, fmt, makeRng
   };

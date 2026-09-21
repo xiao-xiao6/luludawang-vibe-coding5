@@ -1,5 +1,5 @@
 /* ============================================================
- * 游戏逻辑层：经济 / 连击 / 升级 / 抽奖 / 存档 / 成就 / 换机台 / 暂停
+ * 游戏逻辑层：经济 / 连击 / 升级 / 抽奖 / 存档 / 成就 / 换机台 / 惩罚 / 订单 / 暂停
  * 不碰 DOM，可在 node 里 headless 跑完整局
  *
  * 随机源分两条独立通道：
@@ -57,7 +57,10 @@
         dropped: 0, paid: 0, lost: 0, spent: 0, earned: 0,
         bestCombo: 0, jackpots: 0, playTime: 0, drops: 0,
         bestPayout: 0, kinds: {}, bailouts: 0,
-        bestCredits: 120, refunds: 0
+        bestCredits: 120, refunds: 0,
+        /* 新玩法（惩罚 / 风险 / 大奖）的统计 */
+        towers: 0, ordersDone: 0, ordersFailed: 0,
+        bursts: 0, hotUses: 0, streaks: 0
       },
       version: SAVE_VERSION
     };
@@ -84,8 +87,23 @@
       autoAcc: 0,
       refillAcc: 0,
       chestCd: 0,
+      towerCd: 0,
       brokeT: 0,
       bailoutCd: 0,
+      /* --- 失败机制 / 主动技能 / 限时订单 --- */
+      hotCd: 0,          // 超频冷却剩余
+      hotT: 0,           // 超频剩余时间
+      overheatT: 0,      // 过热（订单失败）剩余时间
+      gutterTimes: [],   // 漏币时间戳（滑动窗口）
+      streakT: 0,        // 漏币连锁剩余
+      overflow: 0,       // 满台后硬塞的次数
+      congest: 0,        // 当前拥堵程度 0~1（给 UI 与物理共用）
+      /* 产出速率的指数滑动平均（时间常数 D.ORDER.ema 秒）：
+       * 订单目标是**自适应**的，靠它反推「玩家现在大概能打多少」，
+       * 所以初始机台不会收到做不完的单，满配也不会收到白送单。 */
+      rate: { pays: 0, gems: 0, value: 0, combo: 0, clean: 0 },
+      order: null,       // 当前订单：{ id, phase:'offer'|'active', t, prog, target, reward, penalty, def }
+      orderNext: D.ORDER.first,
       paused: false,
       pending: [],       // 给渲染/音效消费的事件
       booted: false      // 是否已经撒过开场币（由调用方决定）
@@ -154,6 +172,7 @@
       world.gutterW = BASE_GUTTER * mod.gut;
       world.maxCoins = 260 + 30 * L("cap");
       world.magnet = g.gemLevel("magnet");
+      g.updateCongestion();
     };
 
     g.insertCount = function () { return 1 + g.upLevel("multi"); };
@@ -164,6 +183,254 @@
       return Math.max(D.REFILL.min, Math.round(world.maxCoins * D.REFILL.ratio));
     };
     g.critChance = function () { return D.critChance(g.gemLevel("crit")); };
+
+    /* ---------------- 失败机制第一层：拥堵 / 爆仓 ----------------
+     * 台面越满，推板越推不动；满台之后还硬塞，前沿的币会被「挤爆」掉进角沟。
+     * 惩罚是**渐进**的：先减速（可感知、可挽回），再爆仓（真丢币）。
+     * 对策是排风马达（抵消减速）与防爆护栏（少丢币），以及自己把币推下去。 */
+    g.congestLevel = function () {
+      const r = world.coins.length / Math.max(1, world.maxCoins);
+      if (r <= D.CONGESTION.warn) return 0;
+      const span = Math.max(1e-6, 1 - D.CONGESTION.warn);
+      return Math.min(1, (r - D.CONGESTION.warn) / span);
+    };
+    g.ventRelief = function () {
+      return Math.min(1, D.CONGESTION.ventRelief * g.upLevel("vent"));
+    };
+    g.updateCongestion = function () {
+      const c = g.congestLevel();
+      const eff = c * (1 - g.ventRelief());   // 排风马达直接削弱拥堵的实际影响
+      g.congest = eff;
+      world.congestMul = 1 - D.CONGESTION.speedLoss * eff;
+      return eff;
+    };
+
+    /* 满台时硬塞：累计到阈值就爆仓，把最前沿的几枚币挤进角沟 */
+    g.overflowPush = function () {
+      g.overflow++;
+      if (g.overflow < D.CONGESTION.burstAt) return 0;
+      return g.burst();
+    };
+    g.burst = function () {
+      const w = world;
+      const n = Math.max(1, D.CONGESTION.burstCoins - g.upLevel("guard"));
+      const arr = w.coins;
+      arr.sort((a, b) => b.y - a.y);          // 最前沿的先被挤出去
+      const lost = Math.min(n, arr.length);
+      const drop = [];
+      for (let i = 0; i < lost; i++) {
+        const c = arr[i];
+        c.dead = true;
+        c.reason = "gutter";
+        drop.push({ x: c.x, y: c.y, kind: c.kind });
+        st.totals.lost++;
+        w.stats.lost++;
+      }
+      if (lost) w.coins = arr.slice(lost);
+      g.overflow = 0;
+      st.totals.bursts++;
+      g.push("burst", { n: lost, drop: drop });
+      g.checkAch();
+      return lost;
+    };
+
+    /* ---------------- 失败机制第二层：漏币连锁 ----------------
+     * 短时间内连续掉沟，机台会「漏」：角沟临时变宽，越漏越亏。 */
+    g.noteGutter = function () {
+      const S = D.STREAK;
+      const t = world.time;
+      const arr = g.gutterTimes;
+      arr.push(t);
+      const cut = t - S.window;
+      let i = 0;
+      while (i < arr.length && arr[i] < cut) i++;
+      if (i) arr.splice(0, i);
+      if (arr.length >= S.n) {
+        if (g.streakT <= 0) { st.totals.streaks++; g.push("streak", { n: arr.length }); }
+        g.streakT = S.dur;
+        arr.length = 0;
+      }
+      /* 零失误：掉沟会把连续进度归零（可以重新积，不是一票否决） */
+      if (g.order && g.order.phase === "active" && g.order.id === "clean") {
+        g.order.prog = 0;
+        g.order.gutters++;
+      }
+      g.rate.clean = 0;
+    };
+
+    /* ---------------- 稀有奖励：金币塔 ----------------
+     * 比宝箱更稀有，推落后立刻结算一大笔现金并撒下一批币。
+     * 出现率同样由 D.TOWER 唯一定义，UI 直接读同一份。 */
+    g.hasTower = function () {
+      for (const c of world.coins) if (c.kind === "tower") return true;
+      return false;
+    };
+    g.tower = function () {
+      const T = D.TOWER;
+      st.totals.towers++;
+      const bonus = T.bonusBase + Math.round(world.rng() * T.bonusSpread) + T.bonusPerLuck * g.upLevel("luck");
+      st.credits += bonus;
+      st.totals.earned += bonus;
+      if (st.credits > st.totals.bestCredits) st.totals.bestCredits = st.credits;
+      const a = g.dropManyCompensated(D.COIN_DEFS.gold, T.gold);
+      const b = g.dropManyCompensated(D.COIN_DEFS.silver, T.silver);
+      g.push("tower", {
+        bonus: bonus,
+        coins: a.made.length + b.made.length,
+        refund: a.refund + b.refund,
+        total: T.gold + T.silver
+      });
+      g.checkAch();
+      return bonus;
+    };
+
+    /* ---------------- 主动技能：超频 ----------------
+     * 冷却好了玩家自己点：花金币换 8 秒双倍产出 + 推板加速。
+     * 必须手动触发，所以自动化长跑测试永远不会误触它。 */
+    g.hotActive = function () { return g.hotT > 0; };
+    g.hotMul = function () { return g.hotT > 0 ? D.HOT.mul : 1; };
+    g.hotReady = function () { return g.hotCd <= 0; };
+    g.hotLeft = function () { return Math.max(0, g.hotT); };
+    g.hotCdLeft = function () { return Math.max(0, g.hotCd); };
+    g.useHot = function () {
+      if (g.hotCd > 0 || st.credits < D.HOT.cost) { g.push("deny", { id: "hot" }); return false; }
+      st.credits -= D.HOT.cost;
+      st.totals.spent += D.HOT.cost;
+      g.hotCd = D.HOT.readyEvery;
+      g.hotT = D.HOT.dur;
+      st.totals.hotUses++;
+      g.push("hot", { dur: D.HOT.dur, cost: D.HOT.cost });
+      g.checkAch();
+      return true;
+    };
+
+    /* ---------------- 失败机制第三层：限时订单 ----------------
+     * 机台不定时给出一个限时订单，玩家自己决定接不接：
+     *   接了 → 达标拿重赏；没达标 → 罚金 + 机台过热（推板减速）
+     *   不接 → 提议到期自动收回，**不算失败**（所以惩罚永远是玩家自己选的） */
+    g.orderActive = function () { return !!(g.order && g.order.phase === "active"); };
+    g.orderOffering = function () { return !!(g.order && g.order.phase === "offer"); };
+    g.orderProgress = function (isGem) {
+      const o = g.order;
+      if (!o || o.phase !== "active") return;
+      if (o.id === "rush") o.prog++;
+      else if (o.id === "combo") o.prog = Math.max(o.prog, g.combo);
+      else if (o.id === "gem") { if (isGem) o.prog++; }
+      /* 零失误：要求的是「连续不掉沟」，不是「全程一枚不掉」。
+       * 掉一次沟只把进度归零，仍然可以重新积 —— 否则就是不可能完成的任务。 */
+      else if (o.id === "clean") o.prog++;
+    };
+
+    /* 当前产出速率（每秒）：EMA 累加器 / 时间常数 */
+    g.payRate = function () { return g.rate.pays / D.ORDER.ema; };
+    g.gemRate = function () { return g.rate.gems / D.ORDER.ema; };
+    g.valueRate = function () { return g.rate.value / D.ORDER.ema; };
+    g.comboRef = function () { return g.rate.combo; };
+    g.cleanRef = function () { return g.rate.clean; };
+
+    /* 把订单定义 + 当前产出速率 → 具体的目标 / 赏金 / 罚金。
+     * 这里算出来的数字会**存进订单对象**，UI 显示和结算读同一份，
+     * 不会出现"看到的赏金和到手的不一样"。 */
+    g.rollOrderSpec = function (def) {
+      let raw;
+      if (def.basis === "combo") raw = g.comboRef() * def.ask;
+      else if (def.basis === "gems") raw = g.gemRate() * def.time * def.ask;
+      else if (def.basis === "clean") raw = g.cleanRef() * def.ask;
+      else raw = g.payRate() * def.time * def.ask;
+      const target = Math.max(def.min, Math.min(def.max, Math.round(raw)));
+
+      // 赏金 = 「这段时间本来大概能赚多少」× pay；未达到速率下限时用 floor 兜底
+      const projected = g.valueRate() * def.time * def.pay;
+      const reward = Math.max(def.floor, Math.round(projected));
+      const penalty = Math.max(10, Math.round(reward * D.ORDER_PENALTY_RATIO));
+      return { target: target, reward: reward, penalty: penalty };
+    };
+    /** 这种订单在当前产能下是否值得给出（不给玩家做不完的任务）。
+     * 注意「零失误」不设门槛：它的目标已经按玩家真实的连击水平自适应缩放，
+     * 再筛一层只会让「刚掉过一次沟」时永远收不到单，反而更难玩。 */
+    g.orderFeasible = function (def) {
+      const F = D.ORDER_FEASIBLE;
+      if (def.basis === "clean") return true;
+      if (def.basis === "gems") return g.gemRate() * def.time >= D.ORDER_GEM_FEASIBLE;
+      if (def.basis === "combo") return g.comboRef() >= F;
+      return g.payRate() * def.time >= F * 8;
+    };
+    g.offerOrder = function () {
+      const pool = D.ORDERS.filter((o) => g.orderFeasible(o));
+      const list = pool.length ? pool : [D.ORDERS[0]];
+      const def = list[(world.rng() * list.length) | 0] || list[0];
+      const spec = g.rollOrderSpec(def);
+      g.order = {
+        id: def.id, phase: "offer", t: D.ORDER.expire, prog: 0, gutters: 0,
+        target: spec.target, reward: spec.reward, penalty: spec.penalty, def: def
+      };
+      g.push("orderOffer", {
+        id: def.id, name: def.name, unit: def.unit,
+        target: spec.target, reward: spec.reward, penalty: spec.penalty, t: D.ORDER.expire
+      });
+    };
+    g.acceptOrder = function () {
+      if (!g.order || g.order.phase !== "offer") return false;
+      g.order.phase = "active";
+      g.order.t = g.order.def.time;
+      g.order.prog = 0;
+      g.order.gutters = 0;
+      g.push("orderStart", {
+        id: g.order.id, name: g.order.def.name, t: g.order.def.time,
+        target: g.order.target, reward: g.order.reward, penalty: g.order.penalty
+      });
+      return true;
+    };
+    g.declineOrder = function () {
+      if (!g.order || g.order.phase !== "offer") return false;
+      g.push("orderDecline", { id: g.order.id, name: g.order.def.name });
+      g.order = null;
+      g.orderNext = D.ORDER.every;
+      return true;
+    };
+    function finishOrder(win) {
+      const o = g.order;
+      if (!o) return;
+      const def = o.def;
+      g.order = null;
+      g.orderNext = D.ORDER.every;
+      if (win) {
+        st.credits += o.reward;
+        st.totals.earned += o.reward;
+        st.totals.ordersDone++;
+        if (st.credits > st.totals.bestCredits) st.totals.bestCredits = st.credits;
+        g.push("orderDone", { id: def.id, name: def.name, reward: o.reward, prog: o.prog, target: o.target });
+      } else {
+        const pay = Math.min(st.credits, o.penalty);
+        st.credits -= pay;
+        st.totals.ordersFailed++;
+        g.overheatT = D.OVERHEAT.dur;
+        g.push("orderFail", {
+          id: def.id, name: def.name, penalty: pay, prog: o.prog,
+          target: o.target, overheat: D.OVERHEAT.dur
+        });
+      }
+      g.checkAch();
+    }
+    function tickOrder(dt) {
+      if (!g.order) {
+        g.orderNext -= dt;
+        if (g.orderNext <= 0) g.offerOrder();
+        return;
+      }
+      const o = g.order;
+      o.t -= dt;
+      if (o.phase === "offer") {
+        if (o.t <= 0) {
+          g.order = null;
+          g.orderNext = D.ORDER.every;
+          g.push("orderExpire", {});
+        }
+        return;
+      }
+      if (o.prog >= o.target) finishOrder(true);
+      else if (o.t <= 0) finishOrder(false);
+    }
 
     /* 连击的滑动窗口：只保留最近 COIN_WINDOW 秒内的推落记录。
      * 这是 B7 的根治手段 —— 原来的单调计数器在满配下几乎不归零，
@@ -197,7 +464,11 @@
       g.comboTimes.length = 0;
       g.combo = 0; g.comboMul = 1;
       g.batchValue = 0; g.batchCount = 0;
-      g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0;
+      g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0; g.towerCd = 0;
+      g.hotCd = 0; g.hotT = 0; g.overheatT = 0;
+      g.gutterTimes.length = 0; g.streakT = 0; g.overflow = 0; g.congest = 0;
+      g.order = null; g.orderNext = D.ORDER.first;
+      g.rate.pays = 0; g.rate.gems = 0; g.rate.value = 0; g.rate.combo = 0; g.rate.clean = 0;
       g.push("prestige", { level: st.prestige, mod: st.modifier });
       g.checkAch();
       return true;
@@ -249,7 +520,7 @@
       let done = 0;
       for (let i = 0; i < n; i++) {
         if (st.credits < 1) break;
-        if (world.full) { g.push("full", {}); break; }
+        if (world.full) { g.push("full", {}); g.overflowPush(); break; }
         const off = n > 1 ? (i - (n - 1) / 2) * 26 : 0;
         const cx = (x != null ? x : world.W / 2) + off + (world.rng() - 0.5) * 8;
         const c = world.drop(D.COIN_DEFS.copper, cx);
@@ -292,6 +563,7 @@
         if (!def) continue;
         if (e.type === "gutter") {
           st.totals.lost++;
+          g.noteGutter();
           g.push("gutter", { x: e.coin.x, y: e.coin.y, kind: e.coin.kind });
           continue;
         }
@@ -304,6 +576,7 @@
         let mul = D.mulFor(g.combo);
         const crit = g.rollRng() < g.critChance();
         if (crit) mul = Math.round(mul * D.CRIT_MULT * 100) / 100;
+        mul = Math.round(mul * g.hotMul() * 100) / 100;
         g.comboMul = mul;
         if (g.combo > st.totals.bestCombo) st.totals.bestCombo = g.combo;
         const gain = Math.round(def.value * mul * g.prestigeMul() * g.modifierDef().gain);
@@ -315,12 +588,24 @@
         g.batchCount++;
         g.batchTimer = COIN_WINDOW;
         if (g.batchValue > st.totals.bestPayout) st.totals.bestPayout = g.batchValue;
+        g.orderProgress(!!def.gem);
+        /* 产出速率 EMA：订单目标靠它自适应。
+         * 这里只**累加原始计数**，指数衰减统一放在 step() 里做 ——
+         * 一处衰减、一处累加，不会出现"插值一次、再衰减一次"的双重计数。
+         * 用 EMA 而不是固定目标，是因为「玩家的产能」在开荒期和满配期
+         * 差了十几倍 —— 固定目标不是把新手罚死，就是把老手喂饭。 */
+        g.rate.pays += 1;
+        g.rate.value += gain;
+        g.rate.clean += 1;
+        if (def.gem) g.rate.gems += def.gem;
+        if (g.combo > g.rate.combo) g.rate.combo = g.combo;
         g.push("pay", {
           x: e.coin.x, y: e.coin.y, gain: gain, kind: def.id,
-          mul: mul, combo: g.combo, crit: crit,
+          mul: mul, combo: g.combo, crit: crit, hot: g.hotActive(),
           gem: def.gem || 0, ticket: def.ticket || 0
         });
         if (def.jackpot) g.jackpot();
+        if (def.tower) g.tower();
       }
     };
 
@@ -448,13 +733,41 @@
         if (g.batchTimer <= 0) { g.batchValue = 0; g.batchCount = 0; }
       }
 
+      /* 产出速率 EMA 的指数衰减：与 processEvents 里的累加配对，
+       * 时间常数 D.ORDER.ema 秒。 */
+      const damp = Math.exp(-dt / D.ORDER.ema);
+      g.rate.pays *= damp;
+      g.rate.value *= damp;
+      g.rate.gems *= damp;
+      g.rate.combo *= damp;
+      g.rate.clean *= damp;
+
+      /* --- 惩罚 / 技能 / 订单的计时 --- */
+      g.updateCongestion();
+      if (g.streakT > 0) {
+        g.streakT -= dt;
+        world.streakMul = g.streakT > 0 ? D.STREAK.mul : 1;
+      } else {
+        world.streakMul = 1;
+      }
+      if (g.hotCd > 0) g.hotCd -= dt;
+      if (g.hotT > 0) g.hotT -= dt;
+      if (g.overheatT > 0) g.overheatT -= dt;
+      tickOrder(dt);
+      // 超频与过热都直接作用到推板速度上，玩家能当场感觉到。
+      // 必须在 tickOrder 之后算：订单失败会当场开始过热，不能慢一帧才生效。
+      world.hotMul = (g.hotT > 0 ? D.HOT.speed : 1) * (g.overheatT > 0 ? D.OVERHEAT.mul : 1);
+
       g.refillAcc += dt;
       if (g.chestCd > 0) g.chestCd -= dt;
+      if (g.towerCd > 0) g.towerCd -= dt;
       if (g.refillAcc >= D.REFILL.every) {
         g.refillAcc = 0;
         if (world.coins.length < g.refillAt() && !world.full) {
           const luck = g.upLevel("luck") + g.modifierDef().luck;
-          if (!g.hasChest() && g.chestCd <= 0 && world.rng() < D.chestChance(luck)) {
+          if (!g.hasTower() && g.towerCd <= 0 && world.rng() < D.towerChance(luck)) {
+            if (world.drop(D.COIN_DEFS.tower)) g.towerCd = D.TOWER.cooldown;
+          } else if (!g.hasChest() && g.chestCd <= 0 && world.rng() < D.chestChance(luck)) {
             if (world.drop(D.COIN_DEFS.chest)) g.chestCd = D.CHEST.cooldown;
           } else {
             world.drop(g.mixDef());
@@ -569,7 +882,13 @@
       g.comboTimes.length = 0;
       g.combo = 0; g.comboMul = 1;
       g.batchValue = 0; g.batchCount = 0;
-      g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0;
+      g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0; g.towerCd = 0;
+      g.hotCd = 0; g.hotT = 0; g.overheatT = 0;
+      g.gutterTimes.length = 0; g.streakT = 0; g.overflow = 0; g.congest = 0;
+      g.order = null; g.orderNext = D.ORDER.first;
+      g.rate.pays = 0; g.rate.gems = 0; g.rate.value = 0; g.rate.combo = 0; g.rate.clean = 0;
+      world.streakMul = 1; world.hotMul = 1;
+      g.updateCongestion();
       return true;
     };
 
@@ -587,7 +906,12 @@
       g.combo = 0; g.comboMul = 1;
       g.batchValue = 0; g.batchCount = 0;
       g.autoAcc = 0; g.refillAcc = 0;
-      g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0;
+      g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0; g.towerCd = 0;
+      g.hotCd = 0; g.hotT = 0; g.overheatT = 0;
+      g.gutterTimes.length = 0; g.streakT = 0; g.overflow = 0; g.congest = 0;
+      g.order = null; g.orderNext = D.ORDER.first;
+      g.rate.pays = 0; g.rate.gems = 0; g.rate.value = 0; g.rate.combo = 0; g.rate.clean = 0;
+      world.streakMul = 1; world.hotMul = 1;
       g.paused = false;
       g.seedField(170, 2);
     };
