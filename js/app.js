@@ -72,288 +72,6 @@
     }
   }
 
-  /* ---------------- 币精灵缓存 ----------------
-   * 按 art 分派：disc 圆片 / gem 棱面钻石 / chest 伪3D 宝箱 / tower 伪3D 金币塔。
-   * 稀有奖励走「立起来」的画法，不再和普通币一样只是转圈。 */
-  const sprites = {};
-  const halos = {};
-
-  function buildDisc(def) {
-    const pad = 4, r = def.r, size = Math.ceil((r + pad) * 2);
-    const c = document.createElement("canvas");
-    c.width = c.height = Math.ceil(size * spriteDpr);
-    const g = c.getContext("2d");
-    g.scale(spriteDpr, spriteDpr);
-    const cx = size / 2, cy = size / 2;
-    g.save(); g.translate(cx, cy);
-
-    g.globalAlpha = 0.35; g.fillStyle = "#000";
-    g.beginPath(); g.ellipse(1.5, 2.5, r, r * 0.92, 0, 0, Math.PI * 2); g.fill();
-    g.globalAlpha = 1;
-
-    const grd = g.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.15, 0, 0, r * 1.05);
-    grd.addColorStop(0, def.color2);
-    grd.addColorStop(0.55, def.color);
-    grd.addColorStop(1, def.ring);
-    g.fillStyle = grd;
-    g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill();
-
-    g.lineWidth = 1.6; g.strokeStyle = def.ring;
-    g.beginPath(); g.arc(0, 0, r - 0.8, 0, Math.PI * 2); g.stroke();
-    g.lineWidth = 1; g.strokeStyle = "rgba(255,255,255,.32)";
-    g.beginPath(); g.arc(0, 0, r * 0.68, 0, Math.PI * 2); g.stroke();
-
-    g.fillStyle = "rgba(0,0,0,.5)";
-    g.font = "900 " + Math.round(r * 1.02) + "px system-ui, sans-serif";
-    g.textAlign = "center"; g.textBaseline = "middle";
-    g.fillText(def.glyph, 0, 1);
-    g.fillStyle = def.color2;
-    g.fillText(def.glyph, 0, 0);
-
-    const hl = g.createLinearGradient(-r, -r, r * 0.3, r * 0.2);
-    hl.addColorStop(0, "rgba(255,255,255,.75)");
-    hl.addColorStop(0.45, "rgba(255,255,255,.06)");
-    hl.addColorStop(1, "rgba(255,255,255,0)");
-    g.fillStyle = hl;
-    g.beginPath(); g.arc(0, 0, r - 1, 0, Math.PI * 2); g.fill();
-
-    g.restore();
-    return { canvas: c, size: size };
-  }
-
-  /** 棱面钻石：上冠 + 下亭，靠面与面的明度差立起来 */
-  function buildGem(def) {
-    const r = def.r * 1.5, size = Math.ceil(r * 2 + 10);
-    const c = document.createElement("canvas");
-    c.width = c.height = Math.ceil(size * spriteDpr);
-    const g = c.getContext("2d");
-    g.scale(spriteDpr, spriteDpr);
-    g.translate(size / 2, size / 2 + 1);
-
-    const tw = r * 0.5;    // 桌面半径
-    const hw = r * 0.95;   // 腰围半径
-    const top = -r * 0.72, waist = -r * 0.08, tip = r * 0.95;
-
-    // 亭部（下半）
-    g.fillStyle = def.ring;
-    g.beginPath();
-    g.moveTo(-hw, waist); g.lineTo(hw, waist); g.lineTo(0, tip); g.closePath();
-    g.fill();
-    // 亭部左半稍亮 → 单侧受光
-    g.fillStyle = def.color;
-    g.beginPath();
-    g.moveTo(-hw, waist); g.lineTo(0, waist); g.lineTo(0, tip); g.closePath();
-    g.fill();
-
-    // 冠部（上半）
-    const grd = g.createLinearGradient(-hw, top, hw, waist);
-    grd.addColorStop(0, def.color2);
-    grd.addColorStop(0.5, def.color);
-    grd.addColorStop(1, def.ring);
-    g.fillStyle = grd;
-    g.beginPath();
-    g.moveTo(-tw, top); g.lineTo(tw, top);
-    g.lineTo(hw, waist); g.lineTo(-hw, waist); g.closePath();
-    g.fill();
-
-    // 刻面线
-    g.strokeStyle = "rgba(255,255,255,.42)";
-    g.lineWidth = 1;
-    g.beginPath();
-    g.moveTo(-tw, top); g.lineTo(-hw * 0.45, waist);
-    g.moveTo(tw, top); g.lineTo(hw * 0.45, waist);
-    g.moveTo(0, top); g.lineTo(0, waist);
-    g.moveTo(-tw, top); g.lineTo(0, top); g.lineTo(tw, top);
-    g.moveTo(-hw, waist); g.lineTo(hw, waist);
-    g.stroke();
-    g.strokeStyle = "rgba(255,255,255,.2)";
-    g.beginPath();
-    g.moveTo(-hw * 0.45, waist); g.lineTo(0, tip);
-    g.moveTo(hw * 0.45, waist); g.lineTo(0, tip);
-    g.stroke();
-
-    // 高光
-    g.fillStyle = "rgba(255,255,255,.72)";
-    g.beginPath();
-    g.moveTo(-tw * 0.75, top + r * 0.1); g.lineTo(-tw * 0.1, top + r * 0.06);
-    g.lineTo(-hw * 0.5, waist - r * 0.06); g.lineTo(-hw * 0.72, waist - r * 0.2);
-    g.closePath(); g.fill();
-
-    g.restore();
-    return { canvas: c, size: size, art: "gem" };
-  }
-
-  /** 伪3D 宝箱：正面 + 顶面 + 箱盖，带锁扣 */
-  function buildChest(def) {
-    const r = def.r * 1.25, size = Math.ceil(r * 2.6 + 12);
-    const c = document.createElement("canvas");
-    c.width = c.height = Math.ceil(size * spriteDpr);
-    const g = c.getContext("2d");
-    g.scale(spriteDpr, spriteDpr);
-    g.translate(size / 2, size / 2 + 2);
-
-    const hw = r * 1.02;            // 正面半宽
-    const bodyTop = -r * 0.18, bodyBot = r * 0.95;
-    const d = r * 0.42;             // 伪3D 纵深
-
-    // 地面投影
-    g.globalAlpha = 0.4; g.fillStyle = "#000";
-    g.beginPath(); g.ellipse(0, bodyBot + r * 0.12, hw * 1.02, r * 0.3, 0, 0, Math.PI * 2); g.fill();
-    g.globalAlpha = 1;
-
-    // 侧面（右侧厚度）
-    g.fillStyle = def.ring;
-    g.beginPath();
-    g.moveTo(hw, bodyTop); g.lineTo(hw + d, bodyTop - d * 0.5);
-    g.lineTo(hw + d, bodyBot - d * 0.5); g.lineTo(hw, bodyBot); g.closePath();
-    g.fill();
-
-    // 顶面（箱盖顶）
-    g.fillStyle = def.color;
-    g.beginPath();
-    g.moveTo(-hw, bodyTop); g.lineTo(hw, bodyTop);
-    g.lineTo(hw + d, bodyTop - d * 0.5); g.lineTo(-hw + d, bodyTop - d * 0.5);
-    g.closePath();
-    g.fill();
-    g.strokeStyle = "rgba(255,255,255,.3)"; g.lineWidth = 1;
-    g.stroke();
-
-    // 正面（箱体）
-    const grd = g.createLinearGradient(0, bodyTop, 0, bodyBot);
-    grd.addColorStop(0, def.color);
-    grd.addColorStop(0.62, def.ring);
-    grd.addColorStop(1, "#2b0f3d");
-    g.fillStyle = grd;
-    g.beginPath(); g.rect(-hw, bodyTop, hw * 2, bodyBot - bodyTop); g.fill();
-
-    // 箱盖分界线 + 铁箍
-    g.fillStyle = "rgba(255,255,255,.22)";
-    g.fillRect(-hw, bodyTop + (bodyBot - bodyTop) * 0.3, hw * 2, 2);
-    g.fillStyle = "rgba(0,0,0,.3)";
-    g.fillRect(-hw * 0.22, bodyTop, 3, bodyBot - bodyTop);
-    g.fillRect(hw * 0.22 - 3, bodyTop, 3, bodyBot - bodyTop);
-
-    // 锁扣
-    g.fillStyle = "#ffd75e";
-    g.beginPath();
-    g.moveTo(-r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.24);
-    g.lineTo(r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.24);
-    g.lineTo(r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.62);
-    g.lineTo(-r * 0.22, bodyTop + (bodyBot - bodyTop) * 0.62);
-    g.closePath(); g.fill();
-    g.fillStyle = "#7a4a06";
-    g.beginPath(); g.arc(0, bodyTop + (bodyBot - bodyTop) * 0.4, r * 0.1, 0, Math.PI * 2); g.fill();
-
-    // 边缘高光
-    g.strokeStyle = "rgba(255,255,255,.45)"; g.lineWidth = 1.4;
-    g.beginPath(); g.rect(-hw, bodyTop, hw * 2, bodyBot - bodyTop); g.stroke();
-
-    g.restore();
-    return { canvas: c, size: size, art: "chest" };
-  }
-
-  /** 伪3D 金币塔：一摞逐渐收窄的金币，顶上一枚立起来 */
-  function buildTower(def) {
-    const r = def.r * 1.15, size = Math.ceil(r * 2.8 + 14);
-    const c = document.createElement("canvas");
-    c.width = c.height = Math.ceil(size * spriteDpr);
-    const g = c.getContext("2d");
-    g.scale(spriteDpr, spriteDpr);
-    g.translate(size / 2, size / 2 + 3);
-
-    const n = 5;                       // 摞 5 层
-    const stepY = r * 0.32;
-    const baseY = r * 0.78;
-
-    g.globalAlpha = 0.42; g.fillStyle = "#000";
-    g.beginPath(); g.ellipse(0, baseY + r * 0.22, r * 1.05, r * 0.32, 0, 0, Math.PI * 2); g.fill();
-    g.globalAlpha = 1;
-
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const rr = r * (1 - 0.1 * t);
-      const y = baseY - i * stepY;
-      // 币身厚度
-      g.fillStyle = def.ring;
-      g.beginPath();
-      g.moveTo(-rr, y - r * 0.14); g.lineTo(rr, y - r * 0.14);
-      g.lineTo(rr, y + r * 0.1); g.lineTo(-rr, y + r * 0.1);
-      g.closePath(); g.fill();
-      // 顶面
-      const grd = g.createLinearGradient(-rr, y - r * 0.3, rr, y + r * 0.1);
-      grd.addColorStop(0, def.color2);
-      grd.addColorStop(0.55, def.color);
-      grd.addColorStop(1, def.ring);
-      g.fillStyle = grd;
-      g.beginPath(); g.ellipse(0, y - r * 0.14, rr, r * 0.3, 0, 0, Math.PI * 2); g.fill();
-      g.strokeStyle = "rgba(255,255,255,.34)"; g.lineWidth = 1;
-      g.beginPath(); g.ellipse(0, y - r * 0.14, rr * 0.72, r * 0.2, 0, 0, Math.PI * 2); g.stroke();
-    }
-
-    // 顶部立起来的那一枚（金币塔的"尖"）
-    const topY = baseY - (n - 1) * stepY - r * 0.62;
-    const grd2 = g.createRadialGradient(-r * 0.3, topY - r * 0.2, r * 0.1, 0, topY, r * 0.62);
-    grd2.addColorStop(0, "#fff6d0");
-    grd2.addColorStop(0.55, def.color);
-    grd2.addColorStop(1, def.ring);
-    g.fillStyle = grd2;
-    g.beginPath(); g.arc(0, topY, r * 0.56, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1.2;
-    g.beginPath(); g.arc(0, topY, r * 0.56, 0, Math.PI * 2); g.stroke();
-
-    g.restore();
-    return { canvas: c, size: size, art: "tower" };
-  }
-
-  function buildSprite(def) {
-    if (def.art === "gem") return buildGem(def);
-    if (def.art === "chest") return buildChest(def);
-    if (def.art === "tower") return buildTower(def);
-    return buildDisc(def);
-  }
-  function sprite(kind) {
-    if (!sprites[kind]) sprites[kind] = buildSprite(D.COIN_DEFS[kind]);
-    return sprites[kind];
-  }
-  /** 稀有奖励的脉冲光晕：烘焙一次，主循环只 drawImage（不每帧建渐变） */
-  function halo(color) {
-    if (halos[color]) return halos[color];
-    const size = 192;
-    const c = document.createElement("canvas");
-    c.width = c.height = size;
-    const g = c.getContext("2d");
-    const grd = g.createRadialGradient(size / 2, size / 2, 2, size / 2, size / 2, size / 2);
-    grd.addColorStop(0, color);
-    grd.addColorStop(0.30, color.replace(/[\d.]+\)$/, "0.5)"));
-    grd.addColorStop(0.62, color.replace(/[\d.]+\)$/, "0.14)"));
-    grd.addColorStop(1, "rgba(0,0,0,0)");
-    g.fillStyle = grd;
-    g.fillRect(0, 0, size, size);
-    halos[color] = c;
-    return c;
-  }
-
-  /** 稀有奖励的“地面光环”：一圈旋转虚线的椭圆环，让它在满台币里一眼可见 */
-  function heroRing(color) {
-    const key = "ring:" + color;
-    if (halos[key]) return halos[key];
-    const s = 160;
-    const c = document.createElement("canvas");
-    c.width = c.height = s;
-    const g = c.getContext("2d");
-    g.translate(s / 2, s / 2);
-    g.scale(1, 0.52);                      // 压成椭圆：贴合倾斜台面
-    g.strokeStyle = color;
-    g.lineWidth = 4;
-    g.setLineDash([13, 9]);
-    g.beginPath(); g.arc(0, 0, 58, 0, Math.PI * 2); g.stroke();
-    g.setLineDash([]);
-    g.globalAlpha = 0.45;
-    g.lineWidth = 1.5;
-    g.beginPath(); g.arc(0, 0, 68, 0, Math.PI * 2); g.stroke();
-    halos[key] = c;
-    return c;
-  }
 
   /* ============================================================
    * 渲染管线（2.5D）—— 显式的分层，遮挡关系是"机器实体感"的来源
@@ -605,11 +323,8 @@
 
     Fx.apply(p.perf);
 
-    // 高清档位变了就重烘焙币精灵与机台，避免糊边
-    if (dpr !== spriteDpr) {
-      spriteDpr = dpr;
-      for (const k in sprites) delete sprites[k];
-    }
+    // 高清档位变了就重烘焙币精灵（CPCoin.setDpr 内部会清空并重建缓存）与机台
+    spriteDpr = dpr;
     Coin.setDpr(dpr);
     M.invalidate();
     Pusher.invalidate();
@@ -1077,13 +792,16 @@
 
   /* ---------------- 输入 ----------------
    * 台面现在有透视：屏幕 x 不能直接当台面 x 用。
-   * 反过来解算到「落点那一行」的台面坐标，玩家点哪条通道就落哪条通道。 */
+   * 反过来解算到「落点那一行」的台面坐标，玩家点哪条通道就落哪条通道。
+   *
+   * 注意：机台烘焙时会 P.setViewport({cx, cy, s}) 把整块台面缩进内舱，
+   * 所以反解必须走 CPProject.unprojectX —— 它会把视口的缩放/平移一并还原。
+   * 这里如果只除 kAt(y)，落点会向中轴收缩（s=0.76 时边缘偏差可达 43 台面像素）。 */
   function boardXFromClient(clientX) {
     const r = cv.getBoundingClientRect();
+    if (!(r.width > 0)) return W / 2;
     const sx = (clientX - r.left) / r.width * W;
-    const y = game.world.dropZone.yMid;
-    const k = P.kAt(y);
-    return W / 2 + (sx - W / 2) / k;
+    return P.unprojectX(sx, game.world.dropZone.yMid);
   }
   function doDrop(x) {
     Sfx.ensure();

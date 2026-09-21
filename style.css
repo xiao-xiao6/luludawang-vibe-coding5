@@ -462,35 +462,112 @@ body[data-mode="narrow"] .logo{font-size:16px}
 body[data-mode="narrow"] .cur{padding:3px 8px}
 body[data-mode="narrow"] .cap-bar{width:56px}
 
-/* 手机横屏 / 矮窗口：台面在左，HUD 与操作在右，纵向空间全给台面 */
+/* 右列容器：默认 display:contents，让 quest / pad / ticker 直接当 .cab 的孩子，
+   wide / stack / narrow 三档的布局与以前一致；
+   compact 档才把它变成真正的列（带滚动）。 */
+.cab-side{display:contents}
+
+/* 手机横屏 / 矮窗口：台面在左，HUD 与操作在右，纵向空间全给台面。
+   右列（HUD + 订单 + 操作区）天生可能比台面高，所以让 cab-side 自己滚：
+   否则订单一出现机柜就比视口高，底部的「投币」键直接被切掉。 */
 body[data-mode="compact"] .cab{
   display:grid;
   grid-template-columns:var(--stage-w,270px) minmax(0,1fr);
-  grid-template-areas:"stage hud" "stage pad" "stage tick";
-  gap:8px;
-  align-content:start;
+  grid-template-areas:"stage hud" "stage side";
+  grid-template-rows:auto minmax(0,1fr);
+  gap:5px;
+  align-content:stretch;
+  /* 机柜不得高于视口（含安全区）：高的那部分交给右列自己滚 */
+  max-height:calc(100vh - var(--page-pad,8px) * 2 - var(--safe-top,0px) - var(--safe-bottom,0px));
 }
 body[data-mode="compact"] .stage{grid-area:stage;align-self:start;margin:0}
 body[data-mode="compact"] .brand{display:none}   /* 横屏空间金贵，品牌让位给按钮 */
 body[data-mode="compact"] kbd{display:none}      /* 手机没有空格键，快捷键提示收掉 */
 body[data-mode="compact"] .hud{
-  grid-area:hud;flex-direction:column;align-items:stretch;
-  gap:5px;margin-bottom:0;
+  grid-area:hud;flex-wrap:wrap;align-items:center;
+  gap:4px 6px;margin-bottom:0;
 }
-body[data-mode="compact"] .purse{margin-left:0;gap:4px;justify-content:flex-start}
+body[data-mode="compact"] .purse{margin-left:0;gap:4px;justify-content:flex-start;flex-wrap:wrap}
 body[data-mode="compact"] .cur{padding:2px 7px;font-size:12px}
-body[data-mode="compact"] .hud-actions{flex-direction:column;align-items:stretch;gap:5px}
-body[data-mode="compact"] .hud-left,body[data-mode="compact"] .hud-right{justify-content:flex-start;margin-left:0}
-body[data-mode="compact"] .pad{grid-area:pad;grid-template-columns:1fr;gap:6px;margin-top:0}
-body[data-mode="compact"] .pad .big{grid-column:auto}
-body[data-mode="compact"] .pad button{min-height:44px;padding:8px 6px;font-size:13px}
-body[data-mode="compact"] .ticker{grid-area:tick;margin-top:0;text-align:left;font-size:11.5px}
+/* HUD 操作区横排 + 换行：竖排会吃掉 140px，把右列挤到装不下四键 */
+body[data-mode="compact"] .hud-actions{flex-wrap:wrap;align-items:center;gap:4px}
+body[data-mode="compact"] .hud-left,body[data-mode="compact"] .hud-right{flex-wrap:wrap;justify-content:flex-start;margin-left:0;gap:4px}
+body[data-mode="compact"] .hud-right .ico{padding:4px 7px;font-size:11px;min-height:26px}
+body[data-mode="compact"] .cap{flex:1 1 auto;min-width:96px}
+body[data-mode="compact"] .chip{padding:2px 6px;font-size:10.5px}
+/* 右列：可滚动，不把机柜撑出屏幕 */
+body[data-mode="compact"] .cab-side{
+  grid-area:side;
+  display:flex;flex-direction:column;gap:5px;
+  min-height:0;overflow-y:auto;overscroll-behavior:contain;
+}
+/* 操作区：四键平铺成 2×2（正好 2 行，最省纵向空间）
+   之前让「投币」独占一行会变成 3 行，矮横屏直接装不下。 */
+body[data-mode="compact"] .pad{
+  grid-template-columns:1fr 1fr;gap:4px;margin-top:0;
+}
+body[data-mode="compact"] .pad .big{grid-column:auto;min-height:34px}
+body[data-mode="compact"] .pad button{min-height:30px;padding:4px 6px;font-size:12px}
+/* 订单条：横屏把它压成「单行 + 进度条贴底」，否则光订单就吃掉 79px */
+body[data-mode="compact"] .quest{
+  margin-top:0;padding:4px 7px;gap:3px;
+}
+body[data-mode="compact"] .quest-main{font-size:11.5px;gap:5px;flex-wrap:wrap}
+body[data-mode="compact"] .quest-prog{font-size:10.5px}
+body[data-mode="compact"] .quest-bar{height:4px}
+body[data-mode="compact"] .quest-acts{gap:4px;flex-wrap:wrap}
+body[data-mode="compact"] .quest-time{font-size:10.5px}
+body[data-mode="compact"] .quest-acts .ico{padding:3px 8px;font-size:11.5px;min-height:24px}
+body[data-mode="compact"] .ticker{margin-top:0;text-align:left;font-size:11px}
 body[data-mode="compact"] .log{height:auto;max-height:calc(100vh - 16px)}
 
 /* 超矮横屏（如 320px 高）：再砍掉状态条，保住台面和按钮 */
 @media (max-height:380px){
   body[data-mode="compact"] .ticker{display:none}
-  body[data-mode="compact"] .pad button{min-height:40px}
+  body[data-mode="compact"] .quest{padding:4px 6px}
+}
+
+/* 极矮横屏（≤340px，如 320px 的矮机）：HUD 与操作键再压一档。
+   四键改回单行四列（2×2 在极矮屏上会多出一行），「投币」跨两列保宽度。 */
+@media (max-height:340px){
+  body[data-mode="compact"] .hud{gap:2px 5px}
+  body[data-mode="compact"] .cur{padding:1px 5px;font-size:11px}
+  body[data-mode="compact"] .cap-bar{width:36px}
+  body[data-mode="compact"] .hud-right .ico{padding:3px 6px;font-size:10.5px;min-height:24px}
+  body[data-mode="compact"] .cab-side{gap:3px}
+  body[data-mode="compact"] .pad{grid-template-columns:1fr 1fr;gap:3px}
+  body[data-mode="compact"] .pad .big{grid-column:auto;min-height:28px}
+  body[data-mode="compact"] .pad button{min-height:26px;padding:3px 5px;font-size:11.5px}
+  body[data-mode="compact"] .quest{padding:3px 5px;gap:2px}
+  body[data-mode="compact"] .quest-bar{height:3px}
+  body[data-mode="compact"] .quest-acts .ico{padding:3px 8px;font-size:11px;min-height:26px}
+}
+
+/* 极矮横屏（≤340px，如 320px 的矮机）：右列根本装不下 HUD+订单+四键，
+   把「抽奖」收成图标行并把 HUD 压到最精简，优先保证投币键可点。 */
+@media (max-height:340px){
+  body[data-mode="compact"] .hud{gap:2px}
+  body[data-mode="compact"] .cur{padding:1px 5px;font-size:11px}
+  body[data-mode="compact"] .cap-bar{width:44px}
+  body[data-mode="compact"] .hud-right .ico{padding:3px 6px;font-size:11px}
+  body[data-mode="compact"] .pad button{min-height:30px;padding:4px 5px;font-size:12px}
+  body[data-mode="compact"] .quest{padding:3px 5px;gap:3px}
+  body[data-mode="compact"] .quest-bar{height:4px}
+  body[data-mode="compact"] .quest-acts .ico{padding:3px 6px;font-size:11px}
+}
+
+/* 极窄竖屏（≤340px 宽，如 iPhone 5 / 老安卓）：订单条 + 两行操作区太高，
+   操作区收回单行四键、订单条再矮一点。 */
+@media (max-width:340px){
+  body[data-mode="narrow"] .pad{grid-template-columns:1.5fr 1fr 1fr 1fr}
+  body[data-mode="narrow"] .pad .big{grid-column:auto}
+  body[data-mode="narrow"] #btnLottery{grid-column:auto}
+  body[data-mode="narrow"] .pad button{padding:9px 4px;font-size:12px}
+  body[data-mode="narrow"] .quest{padding:6px 8px;gap:4px}
+  body[data-mode="narrow"] .quest-main{font-size:11.5px}
+  body[data-mode="narrow"] .quest-acts .ico{padding:5px 8px;font-size:11.5px}
+  body[data-mode="narrow"] .hud-actions{gap:4px}
+  body[data-mode="narrow"] .hud-right .ico{padding:5px 8px;font-size:11.5px}
 }
 
 /* 触屏设备：按钮一律达到 44px 最小可点尺寸 */

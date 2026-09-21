@@ -27,7 +27,17 @@
   const MAX_CAB = { wide: 520, stack: 600, narrow: 600, compact: 9999 };
   // 机柜内「除台面外」占掉的纵向高度（页边距 + HUD + 订单条 + 操作区 + 状态条）的保守估计
   // compact 档的 HUD / 操作区都在右侧列里，几乎不占台面的纵向空间
-  const CHROME = { wide: 300, stack: 300, narrow: 360, compact: 64 };
+  //
+  // **必须把「限时订单」条算进去**：它高约 79px（含 margin），而订单从第 14 秒就开始派。
+  // 之前漏了它，于是订单一出现机柜就比视口高，底部的「投币」键直接被切掉 ——
+  // 这是「电脑/手机上玩一会儿按钮就没了」的真凶。
+  const QUEST_H = 88;          // 订单条高度 + 余量（实测 79，留一点 buffer）
+  const CHROME = {
+    wide: 300 + QUEST_H,
+    stack: 300 + QUEST_H,
+    narrow: 360 + QUEST_H,
+    compact: 64
+  };
 
   const MODES = ["wide", "stack", "narrow", "compact"];
 
