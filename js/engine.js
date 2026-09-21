@@ -60,7 +60,10 @@
         bestCredits: 120, refunds: 0,
         /* 新玩法（惩罚 / 风险 / 大奖）的统计 */
         towers: 0, ordersDone: 0, ordersFailed: 0,
-        bursts: 0, hotUses: 0, streaks: 0
+        bursts: 0, hotUses: 0, streaks: 0,
+        upkeep: 0,       // 累计维护费（固定开销）
+        gross: 0,        // 累计毛收益（抽成前）
+        rake: 0          // 累计机台抽成（按比例扣走的惩罚）
       },
       version: SAVE_VERSION
     };
@@ -88,6 +91,12 @@
       refillAcc: 0,
       chestCd: 0,
       towerCd: 0,
+      /* 稀有币「出现间隔」：与 cooldown 独立，用来解开
+       * 「台面上有一枚就永久封锁」的死锁（见 step 里的补给逻辑）。 */
+      chestGap: 0,
+      towerGap: 0,
+      maintAcc: 0,       // 维护费结算计时
+      goodAcc: 0,        // 好币保底涓流计时（限流用，见 step 的补给逻辑）
       brokeT: 0,
       bailoutCd: 0,
       /* --- 失败机制 / 主动技能 / 限时订单 --- */
@@ -184,6 +193,69 @@
     };
     g.critChance = function () { return D.critChance(g.gemLevel("crit")); };
 
+    /* ---------------- 好币保底 / 机台维护费 ---------------- */
+    /* 非铜币数量（银 / 金 / 钻 / 幸运 / 宝箱 / 金币塔）。 */
+    g.countGood = function () {
+      let n = 0;
+      for (const c of world.coins) if (c.kind !== "copper") n++;
+      return n;
+    };
+    /* **稀有币**数量：钻石 / 幸运 / 宝箱 / 金币塔。
+     *
+     * 【关键】保底只能数这几种，不能数「非铜币」——
+     * 银 / 金 由 mixDef 常规补给，存量常年就有几十枚；
+     * 一旦把银 / 金算进保底额度，额度永远被填满，
+     * 钻石和幸运币就**永远等不到涓流**（实测：稳态 4 分钟钻石 0 枚）。 */
+    g.countRare = function () {
+      let n = 0;
+      for (const c of world.coins) {
+        const k = c.kind;
+        if (k === "diamond" || k === "lucky" || k === "chest" || k === "tower") n++;
+      }
+      return n;
+    };
+    /* 稀有币保底下限：台面必须长期留得住稀有币，否则玩家「只见铜币」。 */
+    g.rareFloor = function () {
+      const luck = g.upLevel("luck") + g.modifierDef().luck;
+      const R = D.REFILL;
+      return Math.max(R.rareMin, Math.round(world.maxCoins * R.rareRatio)) + luck * R.rarePerLuck;
+    };
+    /* 稀有币上限：超过就停，避免稀有币堆满台面把经济变成印钞机。 */
+    g.rareCap = function () {
+      return Math.round(world.maxCoins * D.REFILL.rareMaxRatio);
+    };
+    g.upgradeLevelTotal = function () {
+      let n = 0;
+      for (const k in st.upgrades) n += st.upgrades[k] || 0;
+      return n;
+    };
+    /* 维护费：机台越强（升级越多 / 换台层数越高）越贵，收益必须先覆盖它。
+     * 这才是真正的惩罚机制 —— 不是爆仓那种只掉几枚币的软惩罚。 */
+    g.maintenanceCost = function () {
+      const M = D.MAINTENANCE;
+      const raw = M.base + M.perLevel * g.upgradeLevelTotal() + M.perPrestige * (st.prestige || 0);
+      return Math.max(0, Math.min(M.maxPerTick, Math.round(raw)));
+    };
+    g.chargeMaintenance = function () {
+      const cost = g.maintenanceCost();
+      if (cost <= 0) return 0;
+      const pay = Math.min(st.credits, cost);
+      st.credits -= pay;
+      st.totals.upkeep = (st.totals.upkeep || 0) + pay;
+      if (pay > 0) g.push("upkeep", { amount: pay, cost: cost });
+      return pay;
+    };
+    /* 机台抽成：所有中奖都按比例切走一部分，产出越高切得越多。
+     * 固定开销对高产出几乎无感，抽成才是能跟上滚雪球速度的那道闸。
+     * 抽成走 totals.rake（不计入 spent，否则会污染投入产出比的语义）。 */
+    g.applyRake = function (amount) {
+      if (!(amount > 0)) return { net: 0, rake: 0 };
+      const cut = Math.round(amount * D.MAINTENANCE.rake);
+      st.totals.gross += amount;
+      st.totals.rake += cut;
+      return { net: amount - cut, rake: cut };
+    };
+
     /* ---------------- 失败机制第一层：拥堵 / 爆仓 ----------------
      * 台面越满，推板越推不动；满台之后还硬塞，前沿的币会被「挤爆」掉进角沟。
      * 惩罚是**渐进**的：先减速（可感知、可挽回），再爆仓（真丢币）。
@@ -268,7 +340,9 @@
     g.tower = function () {
       const T = D.TOWER;
       st.totals.towers++;
-      const bonus = T.bonusBase + Math.round(world.rng() * T.bonusSpread) + T.bonusPerLuck * g.upLevel("luck");
+      const bonus = g.applyRake(
+        T.bonusBase + Math.round(world.rng() * T.bonusSpread) + T.bonusPerLuck * g.upLevel("luck")
+      ).net;
       st.credits += bonus;
       st.totals.earned += bonus;
       if (st.credits > st.totals.bestCredits) st.totals.bestCredits = st.credits;
@@ -490,6 +564,25 @@
       for (const k in w) { roll -= w[k]; if (roll <= 0) return D.COIN_DEFS[k]; }
       return D.COIN_DEFS.copper;
     };
+    /* 好币补给：只从银 / 金 / 钻 / 幸运里抽，**绝不返回铜币**。
+     * mixDef 86% 出铜币，只能用来做「数量补给」；好币保底必须走这里。 */
+    g.goodDef = function (luckBoost) {
+      const luck = g.upLevel("luck") + g.modifierDef().luck + (luckBoost || 0);
+      /* 四种好币都必须能被玩家看见：旧权重下钻石只占 3.3%，
+       * 涓流一慢就等于「看不见钻石」。这里把权重拉平到
+       * 银 ~52% / 金 ~21% / 钻 ~11% / 幸运 ~16%（luck=0 时）。 */
+      const w = {
+        silver: 9 + luck * 1.2,
+        gold: 3.6 + luck * 1.0,
+        diamond: 1.9 + luck * 0.4,
+        lucky: 2.8 + luck * 0.5
+      };
+      let total = 0;
+      for (const k in w) total += w[k];
+      let roll = world.rng() * total;
+      for (const k in w) { roll -= w[k]; if (roll <= 0) return D.COIN_DEFS[k]; }
+      return D.COIN_DEFS.silver;
+    };
 
     /* 撒开场币。**不再由 createGame 自动调用** ——
      * 只由调用方按需触发（boot 的无存档分支 / reset / 换机台），
@@ -581,7 +674,11 @@
         mul = Math.round(mul * g.hotMul() * 100) / 100;
         g.comboMul = mul;
         if (g.combo > st.totals.bestCombo) st.totals.bestCombo = g.combo;
-        const gain = Math.round(def.value * mul * g.prestigeMul() * g.modifierDef().gain);
+        const gross = Math.round(def.value * mul * g.prestigeMul() * g.modifierDef().gain);
+        /* 机台抽成：真正的惩罚机制。
+         * 之前的「惩罚」全是软惩罚（拥堵只是减速、爆仓只丢几枚、漏币只把角沟变宽），
+         * 没有一项从钱包里扣钱，所以收益永远净流入、滚雪球停不下来。 */
+        const gain = g.applyRake(gross).net;
         if (gain > 0) { st.credits += gain; st.totals.earned += gain; }
         if (st.credits > st.totals.bestCredits) st.totals.bestCredits = st.credits;
         if (def.gem) st.gems += def.gem;
@@ -614,7 +711,9 @@
     g.jackpot = function () {
       st.totals.jackpots++;
       const C = D.CHEST;
-      const bonus = C.bonusBase + Math.round(world.rng() * C.bonusSpread) + C.bonusPerLuck * g.upLevel("luck");
+      const bonus = g.applyRake(
+        C.bonusBase + Math.round(world.rng() * C.bonusSpread) + C.bonusPerLuck * g.upLevel("luck")
+      ).net;
       st.credits += bonus;
       st.totals.earned += bonus;
       if (st.credits > st.totals.bestCredits) st.totals.bestCredits = st.credits;
@@ -760,21 +859,62 @@
       // 必须在 tickOrder 之后算：订单失败会当场开始过热，不能慢一帧才生效。
       world.hotMul = (g.hotT > 0 ? D.HOT.speed : 1) * (g.overheatT > 0 ? D.OVERHEAT.mul : 1);
 
+      /* 稀有币断流修复 + 稀有币涓流。三层，缺一不可：
+       *
+       * 【旧 bug】闸门是 world.coins.length < refillAt()（容量 60%）。
+       *   开局赠币 170 枚 > 补给线 156 枚，玩家又一直投币把台面堆高，
+       *   于是这个条件**永远不成立** → 机台一枚新币都不生成。
+       *   开局的银/金/钻被推光后，台面就只剩玩家投的铜币。
+       *
+       * 【现在】
+       *   A) 稀有币：由「冷却 + 出现间隔」驱动，台面同时最多 1 枚只是并发上限，
+       *      不再是「只要有一枚在场就永久封锁」（旧 hasTower 死锁）。
+       *   B) 稀有币涓流：钻石 / 幸运 / 宝箱 / 金币塔存量低于下限时无条件补，
+       *      不受总数闸门限制 —— 保证它们永远有来源（详见 g.countRare）。
+       *   C) 数量补给：低于补给线时才补普通币（原行为，保留）。
+       */
       g.refillAcc += dt;
+      g.goodAcc += dt;
       if (g.chestCd > 0) g.chestCd -= dt;
       if (g.towerCd > 0) g.towerCd -= dt;
+      if (g.towerGap > 0) g.towerGap -= dt;
+      if (g.chestGap > 0) g.chestGap -= dt;
       if (g.refillAcc >= D.REFILL.every) {
         g.refillAcc = 0;
-        if (world.coins.length < g.refillAt() && !world.full) {
+        if (!world.full) {
           const luck = g.upLevel("luck") + g.modifierDef().luck;
-          if (!g.hasTower() && g.towerCd <= 0 && world.rng() < D.towerChance(luck)) {
-            if (world.drop(D.COIN_DEFS.tower)) g.towerCd = D.TOWER.cooldown;
-          } else if (!g.hasChest() && g.chestCd <= 0 && world.rng() < D.chestChance(luck)) {
-            if (world.drop(D.COIN_DEFS.chest)) g.chestCd = D.CHEST.cooldown;
-          } else {
+          const towerOk = g.towerCd <= 0 && g.towerGap <= 0 && world.rng() < D.towerChance(luck);
+          const chestOk = g.chestCd <= 0 && g.chestGap <= 0 && world.rng() < D.chestChance(luck);
+          /* 稀有币涓流：**时间驱动**，不再依赖「总数低于补给线」那道永远不成立的闸门。
+           * 只数钻石 / 幸运 / 宝箱 / 金币塔 —— 银 / 金 由 mixDef 供给，
+           * 若把它们算进额度，额度永远满，钻石就永远补不出来。 */
+          const rareN = g.countRare();
+          const needGood = rareN < g.rareFloor() && rareN < g.rareCap() && g.goodAcc >= D.REFILL.goodEvery;
+          if (towerOk) {
+            if (world.drop(D.COIN_DEFS.tower)) {
+              g.towerCd = D.TOWER.cooldown;
+              g.towerGap = D.TOWER.cooldown;
+              g.chestCd = Math.max(g.chestCd, D.CHEST.cooldown);
+            }
+          } else if (chestOk) {
+            if (world.drop(D.COIN_DEFS.chest)) {
+              g.chestCd = D.CHEST.cooldown;
+              g.chestGap = D.CHEST.cooldown;
+            }
+          } else if (needGood) {
+            if (world.drop(g.goodDef())) g.goodAcc = 0;
+          } else if (world.coins.length < g.refillAt()) {
             world.drop(g.mixDef());
           }
         }
+      }
+
+      /* 机台维护费：真正的惩罚机制（不是爆仓那种软惩罚）。
+       * 机台越强越贵，收益必须先覆盖它 —— 这是让滚雪球变慢的那道闸。 */
+      g.maintAcc += dt;
+      if (g.maintAcc >= D.MAINTENANCE.every) {
+        g.maintAcc -= D.MAINTENANCE.every;
+        g.chargeMaintenance();
       }
 
       /* 破产保护：不再有"场上币数 < 14"这种永远不成立的条件。
@@ -885,6 +1025,7 @@
       g.combo = 0; g.comboMul = 1;
       g.batchValue = 0; g.batchCount = 0;
       g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0; g.towerCd = 0;
+      g.chestGap = 0; g.towerGap = 0; g.maintAcc = 0; g.goodAcc = 0;
       g.hotCd = 0; g.hotT = 0; g.overheatT = 0;
       g.gutterTimes.length = 0; g.streakT = 0; g.overflow = 0; g.congest = 0;
       g.order = null; g.orderNext = D.ORDER.first;
@@ -909,6 +1050,7 @@
       g.batchValue = 0; g.batchCount = 0;
       g.autoAcc = 0; g.refillAcc = 0;
       g.brokeT = 0; g.bailoutCd = 0; g.chestCd = 0; g.towerCd = 0;
+      g.chestGap = 0; g.towerGap = 0; g.maintAcc = 0; g.goodAcc = 0;
       g.hotCd = 0; g.hotT = 0; g.overheatT = 0;
       g.gutterTimes.length = 0; g.streakT = 0; g.overflow = 0; g.congest = 0;
       g.order = null; g.orderNext = D.ORDER.first;

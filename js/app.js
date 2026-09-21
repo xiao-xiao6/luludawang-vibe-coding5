@@ -548,6 +548,7 @@
   const btnHot = $("btnHot"), elHotLv = $("hotLv");
   const elCapText = $("capText"), elCapFill = $("capFill"), elCap = $("cap");
   const chipCongest = $("congestChip"), chipStreak = $("streakChip"), chipOverheat = $("overheatChip");
+  const chipUpkeep = $("upkeepChip");
   const questRow = $("questRow"), questTag = $("questTag"), questName = $("questName");
   const questProg = $("questProg"), questFill = $("questFill"), questTime = $("questTime");
   const btnOrderYes = $("btnOrderYes"), btnOrderNo = $("btnOrderNo");
@@ -766,6 +767,16 @@
     setBool(chipStreak, "hidden", game.streakT <= 0);
     setBool(chipOverheat, "hidden", game.overheatT <= 0);
     if (game.overheatT > 0) setText(chipOverheat, "过热 " + game.overheatT.toFixed(1) + "s");
+    /* 机台维护费：**真正的惩罚机制**，必须常驻可见 ——
+     * 否则玩家只会觉得「钱一直在涨」，看不到任何成本。 */
+    const upkeep = game.maintenanceCost();
+    setBool(chipUpkeep, "hidden", upkeep <= 0);
+    if (upkeep > 0) {
+      setText(chipUpkeep, "维护 −" + D.fmt(upkeep) + "/" + D.MAINTENANCE.every + "s");
+      setAttr(chipUpkeep, "title",
+        "机台维护费：每 " + D.MAINTENANCE.every + "s 扣 " + D.fmt(upkeep) + " ◎（升级越多 / 换台越高越贵）\n" +
+        "抽成：每笔推落收益扣走 " + Math.round(D.MAINTENANCE.rake * 100) + "%");
+    }
 
     refreshQuest();
   }
@@ -812,6 +823,15 @@
     if (t - denyAt < 900) return;
     denyAt = t;
     Sfx.deny();
+  }
+  /* 维护费每 6 秒扣一次，全写日志会刷屏 —— 节流到 20 秒一条，
+   * 但状态 chip 是常驻的，玩家随时能看到成本在跑。 */
+  let upkeepLogAt = 0;
+  function throttledUpkeep(amount) {
+    const t = (window.performance && performance.now) ? performance.now() : Date.now();
+    if (t - upkeepLogAt < 20000) return;
+    upkeepLogAt = t;
+    log("🏧 机台维护费 −" + D.fmt(amount) + " ◎（每 " + D.MAINTENANCE.every + "s 结算一次）", "bad");
   }
 
   function handleEvents() {
@@ -954,6 +974,10 @@
         log("金币见底，机台赠送救济金 +" + e.amount, "sys");
         toast("救济金 +" + e.amount, "ach", "🪙");
         ticker("救济金已到账 +" + e.amount + " · 继续推币吧", false);
+      } else if (e.type === "upkeep") {
+        /* 维护费：唯一一项「无条件下、从钱包里扣钱」的惩罚。
+         * 必须让玩家看见，否则滚雪球就没有任何感知压力。 */
+        throttledUpkeep(e.amount);
       } else if (e.type === "prestige") {
         Sfx.jackpot();
         Fx.shakeIt(10);
@@ -1324,6 +1348,9 @@
       ["超频使用次数", D.fmt(t.hotUses || 0)],
       ["救济金次数", D.fmt(t.bailouts)],
       ["满台折算补偿", D.fmt(t.refunds) + " ◎"],
+      ["机台维护费", D.fmt(t.upkeep || 0) + " ◎"],
+      ["机台抽成", D.fmt(t.rake || 0) + " ◎"],
+      ["累计毛收益（抽成前）", D.fmt(t.gross || 0) + " ◎"],
       ["换机台层数", D.fmt(game.st.prestige || 0)],
       ["当前机台", game.modifierDef().name],
       ["游玩时长", mins + " 分 " + Math.floor(t.playTime % 60) + " 秒"]
@@ -1361,6 +1388,12 @@
       "s 提议一次，" + D.ORDER.expire + "s 内决定；不接不算失败</span>";
     h += '<span class="k">订单失败惩罚</span><span class="v">罚金（按订单）+ 机台过热 ' + D.OVERHEAT.dur +
       "s（推板 ×" + D.OVERHEAT.mul + "）</span>";
+    h += '<span class="k">机台维护费</span><span class="v">每 ' + D.MAINTENANCE.every + "s 扣 " +
+      D.fmt(game.maintenanceCost()) + " ◎（基础 " + D.MAINTENANCE.base + " + 每级 " + D.MAINTENANCE.perLevel +
+      " + 每层换台 " + D.MAINTENANCE.perPrestige + "，单次上限 " + D.MAINTENANCE.maxPerTick +
+      "）—— 收益必须先覆盖它，累计已扣 " + D.fmt(t.upkeep || 0) + " ◎</span>";
+    h += '<span class="k">机台抽成</span><span class="v">每笔推落收益（含宝箱 / 金币塔赏金）按 ' +
+      Math.round(D.MAINTENANCE.rake * 100) + "% 抽走 —— 产出越高切得越多，累计已抽 " + D.fmt(t.rake || 0) + " ◎</span>";
     h += '<span class="k">超频</span><span class="v">花 ' + D.HOT.cost + " ◎ 换 " + D.HOT.dur +
       "s 产出 ×" + D.HOT.mul + " + 推板 ×" + D.HOT.speed + "，冷却 " + D.HOT.readyEvery + "s（手动触发）</span>";
     h += "</div><div class=\"sep\"></div>" +
@@ -1369,6 +1402,8 @@
       "推板往复把币往前推，掉进最前方的出币口就是收益，掉进左右两角的黑槽会丢币。<br>" +
       "连续推落会累积连击倍率；宝箱触发 JACKPOT，金币塔是更稀有的大奖。<br>" +
       "<b>惩罚线</b>：台面超过 80% 会拥堵（推板变慢），满台还硬塞会爆仓；连续掉沟会触发漏币连锁。<br>" +
+      "<b>成本线</b>：机台每 " + D.MAINTENANCE.every + "s 收维护费，每笔收益还被抽走 " +
+      Math.round(D.MAINTENANCE.rake * 100) + "% —— 躺着不推币是会亏钱的。<br>" +
       "<b>风险线</b>：机台会不定时给出限时订单，接下并达标拿重赏，失败要罚金 + 过热。<br>" +
       "金币见底时机台会自动赠送救济金，也可以点「领救济金」立刻领取。<br>" +
       "快捷键：空格投币 / A 自动 / H 超频 / L 抽奖 / P 暂停推板 / Esc 关闭面板。</div></div>";

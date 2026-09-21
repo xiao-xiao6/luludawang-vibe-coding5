@@ -170,22 +170,63 @@
     grant: 400       // 换台后发放的启动金币
   };
 
+  /* ---------------- 机台维护费（真正的惩罚机制）
+   * 之前的「惩罚」全是软惩罚：拥堵只是推板减速，爆仓一次才挤掉 2 枚币，
+   * 漏币连锁只把角沟变宽 —— 没有任何一项真正从钱包里扣钱。
+   * 结果就是收益永远净流入，滚雪球停不下来。
+   *
+   * 维护费是硬支出：每 every 秒扣一次，机台越强（升级越多 / 换台层数越高）越贵。
+   * 于是「升级越多 → 产出越高 → 维护费也越高」，玩家必须真的把币推下去
+   * 才能覆盖成本，而不是躺着数钱。
+   *
+   * 注意：维护费不计入 totals.spent（那是投币成本），单独走 totals.upkeep，
+   * 这样经济平衡测试（投入产出比）的语义不会被污染。 */
+  const MAINTENANCE = {
+    every: 6,          // 每 6 秒结算一次
+    base: 1,           // 基础开销
+    perLevel: 0.5,     // 每级升级追加
+    perPrestige: 2,    // 每层换台追加
+    maxPerTick: 60,    // 单次上限（防止极端存档被扣穿）
+    /* 机台抽成：按比例从每笔推落收益里切走。
+     * 这是唯一能随产出同步放大的惩罚 —— 固定开销对滚雪球几乎无感。 */
+    rake: 0.40
+  };
+
   /* ---------------- 机台补给 / 宝箱 ----------------
    * 所有概率集中在这里，UI 也直接读同一份 ——
    * 不会出现“公示概率和实现不一致”。 */
   const REFILL = {
     every: 0.5,    // 每 0.5 秒尝试补一次
     ratio: 0.6,    // 补给线 = 容量的 60%（扩容槽升上去，台面也真的会填上去）
-    min: 90        // 补给线下限
+    min: 90,       // 补给线下限
+    /* 好币（非铜币）涓流：钻石 / 幸运币的**唯一稳定来源**。
+     *
+     * 【旧 bug】稀有币保底挂在「台面币数 < 补给线」这道闸门上。
+     *   玩家一直投币时台面常年 210~240 枚 > 补给线 156 枚 →
+     *   闸门永远不成立 → 机台一枚钻石都不补 → 台面退化成「只剩铜币」。
+     *
+     * 【现在】改成**时间驱动**：每 goodEvery 秒独立尝试一次，
+     *   稀有币存量低于 rareRatio 下限就补，完全不看总数闸门；
+     *   存量超过 rareMaxRatio 上限就停 —— 稀有币永远有来源，但不会堆成印钞机。
+     *   goodEvery    —— 两次稀有币涓流之间的最短间隔（秒）
+     *   rareMin      —— 稀有币存量下限的绝对值兼底
+     *   rareRatio    —— 稀有币存量下限 = 容量的这个比例
+     *   rareMaxRatio —— 稀有币存量上限 = 容量的这个比例（超过即停止涓流）
+     *   rarePerLuck  —— 每级幸运石抬高多少枚下限 */
+    goodEvery: 5,
+    rareMin: 3,
+    rareRatio: 0.02,
+    rareMaxRatio: 0.10,
+    rarePerLuck: 0.5
   };
   const CHEST = {
     base: 0.01,        // 每次补给的基础出现率
     perLuck: 0.0008,   // 每级幸运石加成
     max: 0.025,        // 出现率上限
-    cooldown: 28,      // 两次宝箱之间的最短间隔（秒）：防止满配时宝箱刷成印钞机
-    bonusBase: 200,    // JACKPOT 现金基础
-    bonusSpread: 170,  // 现金随机浮动
-    bonusPerLuck: 28,  // 每级幸运石追加
+    cooldown: 60,      // 两次宝箱之间的最短间隔（秒）：防止满配时宝箱刷成印钞机
+    bonusBase: 70,     // JACKPOT 现金基础
+    bonusSpread: 60,   // 现金随机浮动
+    bonusPerLuck: 10,  // 每级幸运石追加
     gold: 24, silver: 14, diamond: 3   // 撒币构成（合计 41 枚）
   };
   function chestChance(luck) {
@@ -216,8 +257,8 @@
    * 幸运石越高越容易刷出。base 给得很小：初始机台几乎不会刷到，
    * 保证「开荒期投入产出比」不被稀有奖励污染。 */
   const TOWER = {
-    base: 0.0012, perLuck: 0.0013, max: 0.012, cooldown: 55,
-    bonusBase: 220, bonusSpread: 200, bonusPerLuck: 36,
+    base: 0.0012, perLuck: 0.0013, max: 0.012, cooldown: 120,
+    bonusBase: 77, bonusSpread: 70, bonusPerLuck: 13,
     gold: 14, silver: 8
   };
   function towerChance(luck) {
@@ -314,7 +355,7 @@
     COIN_DEFS, COIN_ORDER, COMBO_TIERS, COMBO_WINDOW,
     UPGRADES, GEM_UPGRADES, ACHIEVEMENTS,
     LOTTERY_TABLE, LOTTERY_TICKET_COST,
-    MODIFIERS, modById, rollModifier, PRESTIGE,
+    MODIFIERS, modById, rollModifier, PRESTIGE, MAINTENANCE,
     REFILL, CHEST, chestChance,
     CONGESTION, STREAK, TOWER, towerChance, HOT, OVERHEAT, ORDERS, ORDER, ORDER_PENALTY_RATIO, ORDER_FEASIBLE, ORDER_GEM_FEASIBLE,
     mulFor, tierMul, tierLabel, tierRank, CRIT_MULT, critChance,
