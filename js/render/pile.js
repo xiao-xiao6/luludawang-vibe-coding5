@@ -39,8 +39,8 @@
     return s;
   }
 
-  /** 附近币的密度（只数 3r 以内的邻居，用均匀网格加速） */
-  function densityOf(world, c) {
+  /** 把整张网格重建一次（每帧只做一次，不是每枚币做一次） */
+  function buildGrid(world) {
     grid.clear();
     const coins = world.coins;
     const cols = Math.floor(world.W / CELL) + 2;
@@ -51,6 +51,13 @@
       if (!b) { b = []; grid.set(key, b); }
       b.push(o);
     }
+    return cols;
+  }
+
+  /** 附近币的密度（只数 3r 以内的邻居，用已建好的均匀网格查询）
+   *  注意：网格由 update() 每帧建一次；这里**不能**再 clear() ——
+   *  那会变成每枚币重建整张网格（260 枚币 = 260 次重建），帧率直接崩掉。 */
+  function densityOf(cols, c) {
     const gx = (c.x / CELL) | 0, gy = (c.y / CELL) | 0;
     const lim = c.r * 3;
     let n = 0;
@@ -76,13 +83,14 @@
     const k = 1 - Math.exp(-6.5 * dt);      // vz 的平滑（被挤高 → 慢慢回落）
     const kt = 1 - Math.exp(-5 * dt);
     const kf = 1 - Math.exp(-9 * dt);
+    const cols = buildGrid(world);
 
     for (let i = 0; i < coins.length; i++) {
       const c = coins[i];
       const s = get(c);
 
       /* --- 堆叠高度：局部隆起，不是整片抬高 --- */
-      const dens = densityOf(world, c);
+      const dens = densityOf(cols, c);
       s.dens = dens;
       let zt = (dens - 2.2) * 0.95;
       if (zt < 0) zt = 0;

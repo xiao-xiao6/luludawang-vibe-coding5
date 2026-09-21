@@ -39,6 +39,10 @@
 
   /* ---------------- 普通币：金属圆片 ---------------- */
   function buildDisc(def) {
+    /* pad 是**画布留白**，不是币的一部分：币的半径始终是 r，
+     * 所以画布比币的直径大 (size / 2r) 倍。
+     * 这个倍率必须交给 drawDisc —— 否则整张画布会被压进 rx*2 的框里，
+     * 币面缩小、压印内环跑到币的中间，普通币看起来就是「中间一圈黑」的甜甜圈。 */
     const pad = 4, r = def.r, size = Math.ceil((r + pad) * 2);
     const o = newCv(size, size), g = o.g;
     g.translate(size / 2, size / 2);
@@ -77,7 +81,7 @@
     g.fillStyle = hl;
     g.beginPath(); g.arc(0, 0, r * 0.9, 0, Math.PI * 2); g.fill();
 
-    return { canvas: o.c, size: size, art: "disc" };
+    return { canvas: o.c, size: size, art: "disc", ratio: size / (r * 2) };
   }
 
   /* ---------------- 棱面钻石 ---------------- */
@@ -311,8 +315,9 @@
     const strip = sideStrip(def);
     ctx.drawImage(strip.canvas, -rx, 0, rx * 2, th);
 
-    // 顶面
-    ctx.drawImage(sp.canvas, -rx, -ry, rx * 2, ry * 2);
+    // 顶面：按精灵自带的留白倍率放大，让「币面半径」正好落在 rx 上
+    const f = sp.ratio || 1;
+    ctx.drawImage(sp.canvas, -rx * f, -ry * f, rx * 2 * f, ry * 2 * f);
 
     // 下沿亮弧：把"金属"钉死
     ctx.strokeStyle = "rgba(255,255,255,.34)";

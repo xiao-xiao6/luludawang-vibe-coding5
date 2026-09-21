@@ -54,6 +54,11 @@
       <div class="stage-note" id="stageNote">点击台面投币 · 空格也行</div>
     </div>
 
+    <!-- 右列（HUD / 订单 / 操作区 / 状态条）：
+         compact 档要它自己可滚动，所以裹一层容器，
+         保证「右列比台面高」时也不会把机柜撑出屏幕。
+         其余档位这层是 display:contents，布局与以前逐像素一致。 -->
+    <div class="cab-side">
     <div class="quest" id="questRow" hidden>
       <div class="quest-main">
         <span class="quest-tag" id="questTag">订单</span>
@@ -84,6 +89,7 @@
     </footer>
 
     <div class="ticker" id="ticker" role="status" aria-live="polite"></div>
+    </div><!-- /.cab-side -->
   </div>
 
   <aside class="log" id="log" aria-label="事件记录">

@@ -176,10 +176,15 @@
     ├── smoke_test.js   自检：物理/经济/存档/成就/换机台/音效/适配/投影/惩罚/订单（282 项）
     ├── tune.js         调参：扫描台面几何，实测掉币率
     ├── penalty.js      实测：惩罚与风险机制在真实游玩下的强度
-    ├── _audit_ui.js    审计：DOM id 配对/脚本顺序/残留旧 API/新 UI 齐全
+    ├── _audit_ui.js    审计：DOM id 配对/脚本顺序/残留旧 API/反投影互逆/新 UI 齐全
     ├── _browser_smoke.js 无头浏览器冒烟：真加载页面、抓运行时错误、截图
     ├── _probe_order.js 探针：订单自适应难度的达成率
-    └── _probe_gem.js   探针：钻石币的真实产出速率
+    ├── _probe_gem.js   探针：钻石币的真实产出速率
+    ├── _probe_layout.js 适配体检：扫 21 个真实机型视口，查溢出/宽高比/触控尺寸
+    ├── _probe_visible.js 可见性体检：订单条出现时，交互元素是否仍完整可点
+    ├── _probe_aim2.js  探针：真实事件派发验证点击命中（含机台视口缩放）
+    ├── _probe_engine.js 探针：数据/升级/订单表的字段合法性与成本单调性
+    └── _probe_final.js 验收：径向扫描普通币观感 + 各档位截图
 ```
 
 **分层原则**：`project` / `physics` / `data` / `engine` / `layout` 完全不碰 DOM，可以在 Node 里跑完整局。
@@ -193,8 +198,13 @@
 node _test/smoke_test.js      # 282 项检查
 node _test/tune.js            # 台面几何调参表
 node _test/penalty.js         # 惩罚/风险机制强度实测
-node _test/_audit_ui.js       # UI 静态审计（DOM id / 脚本顺序 / 残留 API）
+node _test/_audit_ui.js       # UI 静态审计（DOM id / 脚本顺序 / 残留 API / 反投影互逆）
 node _test/_browser_smoke.js  # 无头浏览器冒烟（真跑页面 + 抓错误 + 截图）
+node _test/_probe_layout.js   # 双端适配体检（21 个真实机型视口）
+node _test/_probe_visible.js  # 交互元素可见性（订单条出现时也不被切）
+node _test/_probe_aim2.js     # 点击命中（真实事件派发）
+node _test/_probe_engine.js   # 数据表字段与成本单调性
+node _test/_probe_final.js    # 普通币观感验收 + 各档位截图
 ```
 
 自检覆盖：

@@ -5,3 +5,6 @@ _test/_shots/
 node_modules/
 .DS_Store
 Thumbs.db
+
+# 本地改动前的临时备份（不属于源码）
+_backup/

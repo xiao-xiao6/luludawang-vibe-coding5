@@ -59,8 +59,27 @@ ok(app.includes("quadPath") && app.includes("band("), "台面按透视梯形绘�
 
 console.log("\n[F] 反投影（点击命中）");
 ok(app.includes("boardXFromClient"), "屏幕 x 会反解算回台面 x（透视下点击才准）");
-const rev = app.match(/return W \/ 2 \+ \(sx - W \/ 2\) \/ k;/);
-ok(!!rev, "反投影公式存在且与 projectX 互逆");
+/* 反投影必须走 CPProject.unprojectX：机台烘焙时会 setViewport 把台面缩进内舱，
+ * 只除 kAt(y) 会漏掉视口缩放，落点会向中轴收缩（s=0.76 时边缘偏差可达 43 台面像素）。
+ * 所以这里不只查“公式在不在”，而是**真的跑一遍互逆断言**。 */
+ok(/P\.unprojectX\s*\(/.test(app), "反投影走 CPProject.unprojectX（含视口缩放还原）");
+let invOk = false, invDetail = "未执行";
+try {
+  const Proj = require(path.join(root, "js", "project.js"));
+  Proj.setViewport({ cx: 240, cy: 268, s: 0.76 });   // 与 machine.js 的机台视口一致
+  const y = 304;
+  const errs = [];
+  for (const bx of [60, 120, 240, 360, 420]) {
+    const back = Proj.unprojectX(Proj.projectX(bx, y), y);
+    errs.push(Math.abs(back - bx));
+  }
+  Proj.resetViewport();
+  invOk = errs.every(e => e < 0.01);
+  invDetail = "最大误差 " + Math.max(...errs).toExponential(1) + " 台面像素（含视口 s=0.76）";
+} catch (e) {
+  invDetail = "执行失败: " + e.message;
+}
+ok(invOk, "反投影与 projectX 在视口缩放下互逆", invDetail);
 
 console.log("\n" + "=".repeat(58));
 if (fails === 0) console.log("UI 审计通过：0 问题");
