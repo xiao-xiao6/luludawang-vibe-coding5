@@ -1,0 +1,7 @@
+# 测试/构建产物，不要当源码提交
+_test/out.txt
+_test/*.log
+_test/_shots/
+node_modules/
+.DS_Store
+Thumbs.db
