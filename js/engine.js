@@ -518,6 +518,7 @@
     g.insert = function (x) {
       const n = g.insertCount();
       let done = 0;
+      const made = [];
       for (let i = 0; i < n; i++) {
         if (st.credits < 1) break;
         if (world.full) { g.push("full", {}); g.overflowPush(); break; }
@@ -525,6 +526,7 @@
         const cx = (x != null ? x : world.W / 2) + off + (world.rng() - 0.5) * 8;
         const c = world.drop(D.COIN_DEFS.copper, cx);
         if (!c) break;
+        made.push(c);
         st.credits -= 1;
         st.totals.spent += 1;
         done++;
@@ -533,7 +535,7 @@
         st.totals.dropped += done;
         st.totals.drops += 1;
         if (st.credits > st.totals.bestCredits) st.totals.bestCredits = st.credits;
-        g.push("drop", { n: done, x: x });
+        g.push("drop", { n: done, x: x, coins: made });
       } else {
         g.push("deny", { id: "insert" });
       }

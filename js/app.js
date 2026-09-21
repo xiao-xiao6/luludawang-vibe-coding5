@@ -355,225 +355,54 @@
     return c;
   }
 
-  /* ---------------- 静态台面烘焙（带透视） ----------------
-   * 护栏 / 角沟 / 出币口 / 网格全部按 2.5D 收敛烘焙成离屏 canvas，
-   * 主循环只做 drawImage。
-   */
-  let stageBake = null, stageKey = "";
-  let plateGrad = null, plateHatch = null, plateBakeDpr = 0;
+  /* ============================================================
+   * 渲染管线（2.5D）—— 显式的分层，遮挡关系是"机器实体感"的来源
+   *   Layer 0~3   背景 / 外壳 / 内舱 / 台面     → CPMachine.drawBack
+   *   Layer 4~6   币堆 / 币 / 推板              → CPPile / CPCoin / CPPusher
+   *   Layer 7~9   前沿 / 出币口 / 前立面        → CPMachine.drawFront
+   *   Layer 10    导轨币 / 出币飞行 / FX        → CPChute / CPPayout / CPFx
+   * ============================================================ */
+  const M = window.CPMachine, Coin = window.CPCoin, Pile = window.CPPile;
+  const Pusher = window.CPPusher, Hero = window.CPHero;
+  const Payout = window.CPPayout, Chute = window.CPChute, VRng = window.CPVRng;
 
-  function bakeStage() {
-    const w = game.world;
-    const face = w.plate.y;
-    const gw = w.gutterWidth;
-    const c = document.createElement("canvas");
-    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
-    const g = c.getContext("2d");
-    g.scale(dpr, dpr);
+  let machineShake = 0;      // 机台微震（推板驱动），与 Fx.shake（大事件）分开
+  let pruneAcc = 0;
 
-    // 台面外（机台内壁）
-    const bg = g.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, "#07060f");
-    bg.addColorStop(0.5, "#0a0818");
-    bg.addColorStop(1, "#06050d");
-    g.fillStyle = bg;
-    g.fillRect(0, 0, W, H);
-
-    // 台面底板（梯形：远处收窄 → 透视）
-    const floor = g.createLinearGradient(0, 0, 0, H);
-    floor.addColorStop(0, "#080613");
-    floor.addColorStop(0.35, "#100d24");
-    floor.addColorStop(1, "#1a1436");
-    g.fillStyle = floor;
-    quadPath(g, band(0, W, 0, H));
-    g.fill();
-
-    // 网格：横向直线 + 纵向**收剑**线（沿深度投影，不画成竖直）
-    g.strokeStyle = "rgba(120,150,255,.07)";
-    g.lineWidth = 1;
-    for (let y = face; y < w.payoutY; y += 34) {
-      g.beginPath();
-      g.moveTo(P.projectX(0, y), y);
-      g.lineTo(P.projectX(W, y), y);
-      g.stroke();
-    }
-    for (let x = 0; x <= W; x += 40) depthLine(g, x, 0, H);
-    // 近端（出币口附近）额外压几道横向亮线：远处密、近处疏，强化深度
-    g.strokeStyle = "rgba(120,150,255,.05)";
-    for (let i = 1; i <= 3; i++) {
-      const y = w.payoutY + i * 26;
-      if (y > H) break;
-      g.beginPath();
-      g.moveTo(P.projectX(0, y), y);
-      g.lineTo(P.projectX(W, y), y);
-      g.stroke();
-    }
-
-    // 两侧导轨（沿深度收敛的梯形）
-    for (const side of [0, 1]) {
-      const xa = side ? W - 10 : 0, xb = side ? W : 10;
-      const rail = g.createLinearGradient(side ? W - 10 : 0, 0, side ? W : 10, 0);
-      rail.addColorStop(0, side ? "#151130" : "#2b2358");
-      rail.addColorStop(1, side ? "#2b2358" : "#151130");
-      g.fillStyle = rail;
-      quadPath(g, band(xa, xb, 0, H));
-      g.fill();
-    }
-    // 导轨内沿的高光（沿深度收剑的一条线）
-    g.strokeStyle = "rgba(78,226,255,.28)";
-    g.lineWidth = 1.4;
-    for (const x of [10, W - 10]) depthLine(g, x, 0, H);
-
-    // 角沟（丢币口）：也沿深度收敛
-    const gy = w.payoutY - 52;
-    const gx0 = P.projectX(0, gy), gx1 = P.projectX(gw, gy);
-    const gx2 = P.projectX(W - gw, gy), gx3 = P.projectX(W, gy);
-    g.fillStyle = "#04030a";
-    quadPath(g, band(0, gw, gy, w.payoutY)); g.fill();
-    quadPath(g, band(W - gw, W, gy, w.payoutY)); g.fill();
-    g.strokeStyle = "rgba(255,107,107,.5)";
-    g.lineWidth = 1.2;
-    quadPath(g, band(0, gw, gy, w.payoutY)); g.stroke();
-    quadPath(g, band(W - gw, W, gy, w.payoutY)); g.stroke();
-    // 危险斜纹（跟着透视收剑，不再是一成不变的平行线）
-    g.save();
-    g.beginPath();
-    g.moveTo(gx0, gy); g.lineTo(gx1, gy); g.lineTo(gx2, w.payoutY); g.lineTo(gx3, w.payoutY);
-    g.closePath();
-    g.clip();
-    g.strokeStyle = "rgba(255,107,107,.26)";
-    g.lineWidth = 5;
-    hatch(g, 0, W, gy, w.payoutY, 14, 46);
-    g.restore();
-
-    // 出币口
-    const pay = g.createLinearGradient(0, w.payoutY, 0, H);
-    pay.addColorStop(0, "rgba(78,226,255,.16)");
-    pay.addColorStop(1, "rgba(78,226,255,.02)");
-    g.fillStyle = pay;
-    quadPath(g, band(0, W, w.payoutY, H)); g.fill();
-    g.strokeStyle = "rgba(78,226,255,.55)";
-    g.lineWidth = 2;
-    g.beginPath();
-    g.moveTo(P.projectX(0, w.payoutY), w.payoutY);
-    g.lineTo(P.projectX(W, w.payoutY), w.payoutY);
-    g.stroke();
-
-    // PAYOUT 标签
-    g.fillStyle = "rgba(78,226,255,.42)";
-    g.font = "700 13px system-ui, sans-serif";
-    g.textAlign = "center";
-    const canSpace = "letterSpacing" in g;
-    if (canSpace) g.letterSpacing = "2px";
-    g.fillText("PAYOUT 出币口", W / 2, w.payoutY + 26);
-    if (canSpace) g.letterSpacing = "0px";
-    g.textAlign = "start";
-
-    return c;
-  }
-
-  /* 推板：竖向渐变 + 斜纹图案，都只建一次，之后每帧只填梯形路径 */
-  function bakePlate() {
-    const hh = Math.max(60, Math.round(game.world.plateMaxY * game.world.reachMul + 40));
-    const gg = document.createElement("canvas").getContext("2d");
-    plateGrad = gg.createLinearGradient(0, 0, 0, hh);
-    plateGrad.addColorStop(0, "#241d47");
-    plateGrad.addColorStop(0.55, "#3b3270");
-    plateGrad.addColorStop(1, "#4a3f9c");
-
-    const pc = document.createElement("canvas");
-    pc.width = 40; pc.height = 40;
-    const pg = pc.getContext("2d");
-    pg.strokeStyle = "rgba(255,204,77,.18)";
-    pg.lineWidth = 7;
-    for (let i = -40; i < 80; i += 18) {
-      pg.beginPath(); pg.moveTo(i, 40); pg.lineTo(i + 40, -6); pg.stroke();
-    }
-    plateHatch = ctx.createPattern(pc, "repeat");
-  }
-
-  function ensureBaked() {
-    if (!game) return;
-    const key = dpr + "|" + game.world.gutterWidth.toFixed(2) + "|" + game.world.payoutY;
-    if (key !== stageKey) { stageBake = bakeStage(); stageKey = key; }
-    if (plateBakeDpr !== dpr) { bakePlate(); plateBakeDpr = dpr; }
-  }
-
-  /* ---------------- 台面绘制 ---------------- */
-  function drawPlate() {
-    const w = game.world;
-    const face = w.plate.y;
-    const reach = w.plateMaxReach;
-
-    // 推板下的阴影：让推板"浮"在台面上，而不是贴在平面上
-    ctx.save();
-    ctx.globalAlpha = 0.35;
-    ctx.fillStyle = "#000";
-    quadPath(ctx, band(0, W, Math.max(0, face - 6), face + 14));
-    ctx.fill();
-    ctx.restore();
-
-    // 板体
-    ctx.save();
-    quadPath(ctx, band(0, W, 0, face));
-    ctx.fillStyle = plateGrad;
-    ctx.fill();
-    ctx.fillStyle = plateHatch;
-    ctx.fill();
-    ctx.restore();
-
-    // 前沿：用几层半透明梯形伪造辉光（比每帧 shadowBlur 便宜得多）
-    const bands = [
-      [face - 16, face + 12, "rgba(78,226,255,.07)"],
-      [face - 10, face + 7, "rgba(78,226,255,.16)"],
-      [face - 16, face + 5, "rgba(91,75,196,.95)"],
-      [face - 3, face + 1, "rgba(160,245,255,.92)"]
-    ];
-    for (const b of bands) {
-      ctx.fillStyle = b[2];
-      quadPath(ctx, band(0, W, b[0], b[1]));
-      ctx.fill();
-    }
-
-    // 推板顶部标签（贴在板体上，跟着透视走）
-    ctx.fillStyle = "rgba(200,190,255,.35)";
-    ctx.font = "700 12px system-ui, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("P U S H E R", W / 2, Math.max(14, Math.min(face - 40, 60)));
-    ctx.textAlign = "start";
-    void reach;
-  }
-
-  // 每帧排序用的复用缓冲：不再每帧分配新数组
+  /* 深度排序缓冲：复用数组，不每帧分配 */
   const orderBuf = [];
-  // 稀有奖励的放大不能把币画出画布：验一下最坏情况
+
+  /* ---------------- 金币 / 币堆 ---------------- */
   function drawCoins() {
-    const coins = game.world.coins;
-    const drawShadows = Fx.particles;   // 低端机跳过影子，省一半绘制
-    void isHero;
+    const world = game.world;
+    const coins = world.coins;
+    const drawShadows = Fx.particles !== false;   // 低端机跳过影子，省一半绘制
 
     orderBuf.length = coins.length;
     for (let i = 0; i < coins.length; i++) orderBuf[i] = coins[i];
-    if (orderBuf.length > 1) orderBuf.sort((a, b) => a.y - b.y);
+    if (orderBuf.length > 1) orderBuf.sort((a, b) => Pile.sortKey(a) - Pile.sortKey(b));
 
-    // 落地的那一下：扬尘 + 闷响（每枚币只消费一次）
+    // 落地那一下：扬尘 + 闷响（每枚币只消费一次）
     for (let i = 0; i < orderBuf.length; i++) {
       const c = orderBuf[i];
       if (c.landFx > 0.85 && !c._landDone) {
         c._landDone = true;
-        Fx.dust(P.projectX(c.x, c.y), c.y + 3, D.COIN_DEFS[c.kind].glow);
+        Fx.dust(P.projectX(c.x, c.y), P.projectY(c.y, 0) + 3, D.COIN_DEFS[c.kind].glow);
         Sfx.land();
       } else if (c.landFx <= 0 && c._landDone) {
         c._landDone = false;
       }
     }
 
+    /* 影子：币堆"有厚度"这件事，一半靠它。
+     * 高度用 z + visualZ —— 被挤高的币，影子也跟着变大变淡。 */
     if (drawShadows) {
+      ctx.fillStyle = "#000";
       for (let i = 0; i < orderBuf.length; i++) {
         const c = orderBuf[i];
-        const sh = P.shadow(c.x, c.y, c.z, c.r);
+        const st = Pile.get(c);
+        const sh = P.shadow(c.x, c.y, c.z + st.vz, c.r);
         ctx.globalAlpha = sh.alpha;
-        ctx.fillStyle = "#000";
         ctx.beginPath();
         ctx.ellipse(sh.x, sh.y, sh.rx, sh.ry, 0, 0, Math.PI * 2);
         ctx.fill();
@@ -583,49 +412,27 @@
 
     for (let i = 0; i < orderBuf.length; i++) {
       const c = orderBuf[i];
+      if (c._chuteT > 0) continue;               // 还在导轨上，交给 CPChute 画
       const def = D.COIN_DEFS[c.kind];
-      const sp = sprite(c.kind);
-      const sc = sp.size;
-      const hero = !!def.halo;
-
-      /* 稀有奖励：光晕 + 旋转地面光环 + 轻微呼吸放大。
-       * 这是主人明确提的需求 —— 满台铜币里必须一眼看到金币塔 / 钻石 / 宝箱。
-       * 全部是纯视觉量，不碰物理半径，所以平衡测试不受影响。 */
-      if (hero) {
-        const pulse = 0.5 + 0.5 * Math.sin(nowT * 3.4 + c.id);
-        const hx = P.projectX(c.x, c.y), hy = P.projectY(c.y, c.z);
-        const hs = sc * 2.6 * (1 + 0.06 * pulse);
-        ctx.globalAlpha = 0.34 + 0.4 * pulse;
-        ctx.drawImage(halo(def.halo), hx - hs / 2, hy - hs / 2, hs, hs);
-        ctx.globalAlpha = 1;
-        // 地面光环（不随币升高，始终贴在台面上）
-        const rs = sc * 1.9;
-        ctx.save();
-        ctx.globalAlpha = 0.55 + 0.35 * pulse;
-        ctx.translate(P.projectX(c.x, c.y), c.y + 3);
-        ctx.rotate(nowT * 0.9 + c.id * 0.7);
-        ctx.drawImage(heroRing(def.halo), -rs / 2, -rs / 2, rs, rs);
-        ctx.restore();
-      }
-
-      const k = P.scaleAt(c.y, c.z) * artBoost(c.kind);
-      const px = P.projectX(c.x, c.y), py = P.projectY(c.y, c.z);
+      if (!def) continue;
+      const st = Pile.get(c);
+      const z = c.z + st.vz;
+      // 稀有奖励在屏幕上额外放大一圈（物理半径不变，平衡不受影响）
+      const k = P.scaleAt(c.y, z) * artBoost(c.kind);
+      const px = P.projectX(c.x, c.y), py = P.projectY(c.y, z);
       const sq = 0.35 + 0.65 * c.squash;
-      const breath = hero ? 1 + 0.05 * Math.sin(nowT * 3.4 + c.id) : 1;   // 稀有点币“呼吸”
 
-      ctx.save();
-      ctx.translate(px, py);
-      // 稀有奖励不跟着自转（立着的东西转起来像纸片），只做轻微摇摆
-      if (def.art === "gem") ctx.rotate(c.rot * 0.35);
-      else if (def.art === "disc") ctx.rotate(c.rot);
-      else ctx.rotate(Math.sin(nowT * 2 + c.id) * 0.05);
-      ctx.scale(k * breath, k * sq * breath);
-      ctx.drawImage(sp.canvas, -sc / 2, -sc / 2, sc, sc);
-      ctx.restore();
+      // 稀有奖励：露出越多，光晕 / 地面光环越强
+      if (def.halo) Hero.drawAura(ctx, c, def, px, py, k, nowT);
+
+      Coin.drawCoin(ctx, def, px, py, k, st, sq, nowT);
+
+      // 一次性高光扫过（不是无限爆粒子）
+      if (def.halo) Hero.drawSweep(ctx, c, def, px, py, k, nowT);
 
       if (c.spark > 0.02) {
         ctx.save();
-        ctx.globalAlpha = c.spark * 0.75;
+        ctx.globalAlpha = c.spark * 0.7;
         ctx.strokeStyle = def.glow;
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -635,7 +442,7 @@
       }
       if (c.stress > 1.5) {
         ctx.save();
-        ctx.globalAlpha = Math.min(0.5, c.stress / 10);
+        ctx.globalAlpha = Math.min(0.45, c.stress / 10);
         ctx.strokeStyle = "#fff";
         ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(px, py, c.r * k, 0, Math.PI * 2); ctx.stroke();
@@ -644,16 +451,16 @@
     }
   }
 
-  /* 瞄准提示：横向点哪是哪（磁力/护栏升级的意义所在）。
-   * 2.5D 下同一横向坐标在不同深度对应不同屏幕 x，
+  /* ---------------- 瞄准提示 ----------------
+   * 2.5D 下同一台面 x 在不同深度对应不同屏幕 x，
    * 所以引导线是**收敛曲线**，落点提示也跟着透视压扁。 */
   function drawAim() {
-    if (!hasHover) return;
+    if (!hasHover || !game) return;
     const w = game.world;
     const z = w.dropZone;
     const x = Math.max(14, Math.min(W - 14, hoverX));
     const mid = z.yMid;
-    const k = P.kAt(mid);
+    const k = P.kAt(mid) * P.viewScale();
     const ry = Math.max(10, (z.y1 - z.y0) / 2 * k * 0.55);
 
     ctx.save();
@@ -663,41 +470,71 @@
     ctx.setLineDash([6, 6]);
     ctx.beginPath();
     for (let y = z.y0 + 8; y <= w.payoutY; y += 12) {
-      const sx = P.projectX(x, y);
-      if (y === z.y0 + 8) ctx.moveTo(sx, y); else ctx.lineTo(sx, y);
+      const sx = P.projectX(x, y), sy = P.projectY(y, 0);
+      if (y === z.y0 + 8) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
     }
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const px = P.projectX(x, mid);
+    const px = P.projectX(x, mid), py = P.projectY(mid, 0);
     ctx.globalAlpha = 0.16;
     ctx.fillStyle = "rgba(255,233,168,.6)";
-    ctx.beginPath(); ctx.ellipse(px, mid, 12 * k, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(px, py, 12 * k, ry, 0, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.85;
     ctx.strokeStyle = "rgba(255,233,168,.9)";
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.ellipse(px, mid, 12 * k, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(px, py, 12 * k, ry, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.globalAlpha = 0.7;
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.ellipse(px, mid, 4 * k, ry * 0.35, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(px, py, 4 * k, ry * 0.35, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
 
   function render() {
     if (!game) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ensureBaked();
+    M.bake(game, dpr);
+
     ctx.save();
-    if (Fx.shake > 0.2) {
-      ctx.translate((Math.random() - 0.5) * Fx.shake, (Math.random() - 0.5) * Fx.shake);
-    }
-    ctx.drawImage(stageBake, 0, 0, W, H);
-    drawPlate();
+    // 机台微震 + 屏幕震动叠加，但来源分开：不是所有东西一起抖
+    const sh = Fx.shake + machineShake;
+    if (sh > 0.2) ctx.translate((VRng.next() - 0.5) * sh, (VRng.next() - 0.5) * sh);
+
+    M.drawBack(ctx);                       // 外壳 / 内舱 / 台面
+    Chute.drawRail(ctx, nowT);             // 投币导轨
+    Pusher.draw(ctx, game.world, nowT);    // 推板（压在币下面）
     drawAim();
-    drawCoins();
-    Fx.draw(ctx);
+    drawCoins();                           // 币 / 币堆 / 稀有奖励
+    Chute.draw(ctx, nowT);                 // 还在下落的币
+    M.drawFront(ctx);                      // 立柱 / 前沿 / 出币口 / 前立面
+    Payout.draw(ctx, nowT);                // 飞向 HUD 的奖励
+    Fx.draw(ctx);                          // 粒子 / 飘字
     ctx.restore();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  /* ---------------- HUD 数字滚动结算 ----------------
+   * 不再 12540 → 12660 直接跳，而是 12540 → … → 12660 滚上去，
+   * 让「机器里的奖励 → 飞到 HUD → 数字上涨」形成完整因果链。 */
+  let shownCredits = null;
+  function tickCredits(dt) {
+    if (!game) return;
+    const target = game.st.credits;
+    if (shownCredits == null) { shownCredits = target; return; }
+    if (shownCredits === target) return;
+    const d = target - shownCredits;
+    shownCredits += d * (1 - Math.exp(-dt * 13));
+    if (Math.abs(target - shownCredits) < 1) shownCredits = target;
+    else shownCredits = Math.round(shownCredits);
+  }
+
+  function addDelta(amount) {
+    const el = document.getElementById("dCoin");
+    if (!el || !(amount > 0)) return;
+    el.textContent = "+" + D.fmt(amount);
+    el.classList.remove("on");
+    void el.offsetWidth;                   // 强制重排，动画能重复触发
+    el.classList.add("on");
   }
 
   /* ---------------- DOM ---------------- */
@@ -767,17 +604,29 @@
 
     Fx.apply(p.perf);
 
-    // 高清档位变了就重烘焙币精灵与静态台面，避免糊边
+    // 高清档位变了就重烘焙币精灵与机台，避免糊边
     if (dpr !== spriteDpr) {
       spriteDpr = dpr;
       for (const k in sprites) delete sprites[k];
-      plateBakeDpr = 0;
     }
-    stageKey = "";
+    Coin.setDpr(dpr);
+    M.invalidate();
+    Pusher.invalidate();
 
     const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
     if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // 出币动画的终点：HUD 上的金币数字
+    if (elCoin) {
+      const cvr = cv.getBoundingClientRect(), cr = elCoin.getBoundingClientRect();
+      if (cvr.width > 0 && cvr.height > 0) {
+        Payout.setAnchor({
+          x: (cr.left + cr.width / 2 - cvr.left) / cvr.width * W,
+          y: (cr.top + cr.height / 2 - cvr.top) / cvr.height * H
+        });
+      }
+    }
 
     // 触屏端没有空格键，提示语要换
     if (elStageNote) {
@@ -871,7 +720,7 @@
     const st = game.st;
     if (force) for (const k in hudPrev) delete hudPrev[k];
 
-    setText(elCoin, D.fmt(st.credits));
+    setText(elCoin, D.fmt(shownCredits == null ? st.credits : shownCredits));
     setText(elGem, D.fmt(st.gems));
     setText(elTix, D.fmt(st.tickets));
 
@@ -971,6 +820,8 @@
       const e = evts[i];
       if (e.type === "drop") {
         Sfx.insert();
+        // 投币过程看得见：这几枚先走导轨，再落到真实落点
+        if (e.coins) for (let ci = 0; ci < e.coins.length; ci++) Chute.note(e.coins[ci]);
         const z = game.world.dropZone;
         Fx.ring(P.projectX(e.x == null ? W / 2 : e.x, z.y1), z.y1, "rgba(255,204,77,.5)");
       } else if (e.type === "pay") {
@@ -978,6 +829,14 @@
         const px = P.projectX(e.x, e.y), py = P.projectY(e.y, 0);
         Sfx.pay(e.combo);
         Fx.burst(px, py - 12, def.glow, 10, Math.PI * 2, 150);
+        /* 出币链路：奖励从出币口起飞 → 沿弧线飞向 HUD → 落地时数字滚动结算。
+         * 稀有奖励先有 Hero Hold 停顿，普通奖励直接飞走。 */
+        const sr = M.slotRect(game.world);
+        Payout.spawn(def, sr.x + sr.w / 2, sr.y + sr.h / 2, e.gain, {
+          hero: !!def.hero,
+          jackpot: !!def.jackpot,
+          label: e.gain > 0 ? "+" + D.fmt(e.gain) : def.name + "！"
+        });
         if (e.gain > 0) {
           Fx.text(px, py - 20, "+" + e.gain, e.mul > 1 ? "#ffe9a8" : "#d8ffe6", e.mul >= 2 ? 19 : 15);
         } else if (def.jackpot || def.tower) {
@@ -1098,6 +957,9 @@
       } else if (e.type === "prestige") {
         Sfx.jackpot();
         Fx.shakeIt(10);
+        // 换台＝整台重来：币全换新，视觉层里的旧状态必须一起清掉
+        Pile.clear(); Hero.clear(); Chute.clear(); Payout.clear();
+        machineShake = 0;
         const m = D.modById(e.mod);
         log("换机台成功 → 第 " + e.level + " 台「" + m.name + "」：" + m.desc, "big");
         toast("换机台 · " + m.name, "win", "🎰");
@@ -1156,6 +1018,18 @@
     }
     handleEvents();
     Fx.update(dt);
+
+    /* 视觉层推进：币堆高度 / 稀有奖励露出 / 导轨下落 / 出币飞行。
+     * 全是纯视觉量，不参与碰撞与结算，平衡测试的数字一个都不动。 */
+    const w = game.world;
+    Pile.update(w, dt);
+    Hero.update(w, dt);
+    Chute.update(dt);
+    Payout.update(dt);
+    machineShake = Math.min(2.5, Math.abs(w.plate.vy) / 150);
+    pruneAcc += dt;
+    if (pruneAcc > 2) { pruneAcc = 0; Pile.prune(w); Hero.prune(w); }
+    tickCredits(dt);
 
     if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) elCombo.classList.remove("on"); }
     if (jpTimer > 0) { jpTimer -= dt; if (jpTimer <= 0) elJackpot.classList.remove("on"); }
@@ -1527,6 +1401,9 @@
       if (b.dataset.confirm === "1") {
         game.reset();
         Fx.clear();
+        Pile.clear(); Hero.clear(); Chute.clear(); Payout.clear();
+        machineShake = 0;
+        shownCredits = null;
         clearLog();
         log("存档已重置，机台重新装满。", "sys");
         toast("存档已重置", "ach", "↺");
@@ -1559,8 +1436,13 @@
       ticker("存档已读取 · 继续推币", false);
     }
     game.applyUpgrades();
+    // 视觉层跟着存档走：清掉上一局的残留，再重开数字滚动
+    Pile.clear(); Hero.clear(); Chute.clear(); Payout.clear();
+    Payout.setOnLand(function (it) { if (it && it.amount > 0) addDelta(it.amount); });
+    shownCredits = null;
     refreshHud(true);
     syncMuteBtn();
+    render();
 
     window.addEventListener("resize", fit);
     window.addEventListener("orientationchange", fit);
