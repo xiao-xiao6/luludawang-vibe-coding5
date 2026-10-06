@@ -4,6 +4,17 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const os = require("os");
+
+/* N5：不再把 Chrome 用户配置写进 _test/_shots/_profile*（会积出整个浏览器的
+ * 缓存 / History / Cookies）。每次跑新建一次性临时 profile，进程退出即删。 */
+let profileDir = null;
+function dropProfile() {
+  if (!profileDir) return;
+  try { fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 2 }); } catch (e) { }
+  profileDir = null;
+}
+process.on("exit", dropProfile);
 
 const ROOT = path.join(__dirname, "..");
 const OUT = path.join(__dirname, "_shots");
@@ -120,7 +131,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   if (!browser) { console.log("没有可用浏览器，跳过"); process.exit(0); }
   if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true });
   const srv = await serve();
-  const userDir = path.join(OUT, "_profile_final");
+  profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "cp-probe-final-"));
+  const userDir = profileDir;   // 每次全新，用完即删（N5）
   const args = [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     "--remote-debugging-port=9356", "--user-data-dir=" + userDir,
@@ -219,9 +231,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log("\n--- 各档位截图 ---");
   for (const vp of [{w:1440,h:900,tag:"wide"},{w:390,h:844,tag:"narrow"},{w:740,h:360,tag:"compact"}]) {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: vp.w, height: vp.h, deviceScaleFactor: 2, mobile: vp.w < 700 });
+    // N5.3：旧验收截图里订单条是“订单 — / 0.0s”的占位内容，误导维护者。
+    // 重拍前先真的接一个订单：截图里的目标/赏/罚/倒计时必须都是活数据。
+    await evalJS(`(function(){
+      var g = window.__CP.game;
+      g.st.credits = Math.max(g.st.credits, 1e5);
+      if (!g.order) { g.offerOrder(); g.drainPending(); }
+      if (g.order && g.order.phase === "offer") { g.acceptOrder(); }
+      g.insert(240); g.insert(160);
+    })()`);
     await sleep(500);
-    await evalJS("document.getElementById('questRow').hidden = false;");
-    await sleep(300);
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
     if (shot && shot.data) {
       const f = path.join(OUT, "final-" + vp.tag + ".png");
@@ -232,6 +251,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await cdp.send("Emulation.clearDeviceMetricsOverride");
 
   try { proc.kill(); } catch (e) { }
+  dropProfile();
   srv.close();
   process.exit(0);
 })().catch((e) => { console.error("探针自身出错：", e); process.exit(2); });

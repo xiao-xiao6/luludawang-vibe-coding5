@@ -98,20 +98,39 @@ body{
 .ic.gem{color:var(--cyan)}
 .ic.tix{color:var(--green)}
 
-/* 第二行：左边是全局状态（容量 / 暂停），右边是面板入口 ——
-   两端对齐，不再在左边留一块"看起来没做完"的空白 */
-.hud-actions{
-  display:flex;gap:8px;width:100%;
-  justify-content:space-between;align-items:center;flex-wrap:wrap;
+/* HUD “+N” 结算飘字（N2）：出币飞回 HUD 落地那一刻由 addDelta() 写入。
+   以前这里只有 JS 没有 DOM/样式，链路是断头死代码；现在真的能看见。 */
+.delta{
+  position:absolute;left:2px;bottom:100%;
+  font-size:12px;font-weight:900;color:var(--gold2);pointer-events:none;
+  text-shadow:0 1px 0 rgba(0,0,0,.6),0 0 10px rgba(255,204,77,.55);
+  white-space:nowrap;opacity:0;z-index:3;
 }
-.hud-left,.hud-right{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.hud-right{margin-left:auto}
+.cur{position:relative}
+.delta.on{animation:deltaPop 1s ease-out forwards}
+@keyframes deltaPop{
+  0%{opacity:0;transform:translateY(6px) scale(.8)}
+  16%{opacity:1;transform:translateY(-2px) scale(1.06)}
+  100%{opacity:0;transform:translateY(-12px) scale(1)}
+}
 
-/* 容量条：全局状态，搬进 HUD，不再挤在台面底部 */
-.cap{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
-.cap-label{letter-spacing:1px}
+/* 第二行：容量 / chips / 暂停 / 面板入口合并成**一个流式行**（视觉 1）——
+   hud-left / hud-right 用 display:contents 拆平，所有元素同一序列自然换行，
+   不再有“左组一行、右组另占一行、中间 60% 死空间”的空洞。 */
+.hud-actions{
+  display:flex;gap:4px;width:100%;
+  justify-content:flex-start;align-items:center;flex-wrap:wrap;
+}
+.hud-left,.hud-right{display:contents}
+/* 视觉 1：wide 档整条 HUD 要单行装下 7 个元素，按钮再紧凑一档（触屏档由 pointer:coarse 保 44px） */
+.hud-actions .ico{padding:5px 7px}
+
+/* 容量条：全局状态，搬进 HUD，不再挤在台面底部。
+   尺寸按「wide 档整条 HUD 单行能装下 7 个元素」收紧过（视觉 1）。 */
+.cap{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--dim)}
+.cap-label{letter-spacing:0}
 .cap-bar{
-  display:block;width:74px;height:6px;border-radius:999px;
+  display:block;width:64px;height:6px;border-radius:999px;
   background:#0f0c22;border:1px solid var(--line);overflow:hidden;
 }
 .cap-bar i{display:block;height:100%;width:0;background:var(--green);transition:width .2s ease,background .2s ease}
@@ -124,7 +143,7 @@ body{
    所以必须显式补一条 —— 否则三个 chip 会永远挂在 HUD 上。 */
 .chip{
   display:inline-flex;align-items:center;gap:4px;
-  font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;
+  font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;
   border:1px solid var(--line);background:#0f0c22;white-space:nowrap;
 }
 .chip[hidden]{display:none}
@@ -135,7 +154,7 @@ body{
 button{font:inherit;color:inherit;cursor:pointer}
 .ico{
   background:#1d1840;border:1px solid var(--line);
-  border-radius:var(--r-sm);padding:6px 10px;font-size:12px;
+  border-radius:var(--r-sm);padding:5px 8px;font-size:12px;
   transition:transform .08s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease;
 }
 .ico:hover{background:#2a2356;border-color:#5a4ba8}
@@ -491,7 +510,6 @@ body[data-mode="compact"] .purse{margin-left:0;gap:4px;justify-content:flex-star
 body[data-mode="compact"] .cur{padding:2px 7px;font-size:12px}
 /* HUD 操作区横排 + 换行：竖排会吃掉 140px，把右列挤到装不下四键 */
 body[data-mode="compact"] .hud-actions{flex-wrap:wrap;align-items:center;gap:4px}
-body[data-mode="compact"] .hud-left,body[data-mode="compact"] .hud-right{flex-wrap:wrap;justify-content:flex-start;margin-left:0;gap:4px}
 body[data-mode="compact"] .hud-right .ico{padding:4px 7px;font-size:11px;min-height:26px}
 body[data-mode="compact"] .cap{flex:1 1 auto;min-width:96px}
 body[data-mode="compact"] .chip{padding:2px 6px;font-size:10.5px}
@@ -593,5 +611,6 @@ body[data-mode="compact"] .log{height:auto;max-height:calc(100vh - 16px)}
   .chip{animation:none!important}
   .quest-tag{animation:none!important}
   .hero{animation:none!important;transition:none!important}
+  .delta{animation:none!important;transition:none!important;display:none}
   .pad button:active{transform:none}
 }

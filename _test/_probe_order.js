@@ -9,7 +9,10 @@ const E = require(path.join(__dirname, "..", "js", "engine.js"));
 const MAX = { speed: 6, reach: 6, slick: 5, multi: 4, luck: 6, rail: 5, cap: 4 };
 const MID = { speed: 3, reach: 3, slick: 2, multi: 2, luck: 3 };
 
-/** 先热身一段（让 EMA 收敛到真实产能），再接下指定订单看能不能完成 */
+/** 先热身一段（让 EMA 收敛到真实产能），再接下指定订单看能不能完成
+ * N7：热身从 40s 压到 25s（EMA 时间常数 22s，25s 已收敛到 ≈68%），
+ * trial 从 40 压到 12 —— 整套从“300 秒都跑不完”降到 1~2 分钟，
+ * 变成真正“随手可复现”的回归探针。 */
 function trial(defId, seed, insertEvery, levels) {
   const g = E.createGame({ seed: seed });
   for (const k in (levels || {})) g.st.upgrades[k] = levels[k];
@@ -18,8 +21,8 @@ function trial(defId, seed, insertEvery, levels) {
   g.seedField(170, 2);
 
   let t = 0;
-  // 热身 40 秒：既让 EMA 收敛，也把开场赠币推完
-  for (let i = 0; i < 40 * 60; i++) {
+  // 热身 25 秒：既让 EMA 收敛，也把开场赠币推完
+  for (let i = 0; i < 25 * 60; i++) {
     t += 1 / 60;
     if (t >= insertEvery) { t = 0; g.insert(240); }
     g.step(1 / 60);
@@ -62,12 +65,12 @@ function rate(defId, insertEvery, levels, n) {
   return { win, n, spec, rate0, vrate0, feas };
 }
 
-console.log("=== 订单达成率（自适应目标，热身 40s 后接单，每种 40 次）===");
+console.log("=== 订单达成率（自适应目标，热身 25s 后接单，每种 12 次）===");
 console.log("（「会派单」= 该机台是否真的会收到这种单；✗ 表示已被可行性筛选拦下，不会派给玩家）");
 console.log("订单".padEnd(12) + "机台".padEnd(10) + "会派单".padEnd(10) + "实测产能".padEnd(16) + "自适应目标".padEnd(16) + "赏/罚".padEnd(18) + "达成率");
 for (const o of D.ORDERS) {
   for (const [lab, lv] of [["初始", {}], ["中期", MID], ["满配", MAX]]) {
-    const r = rate(o.id, 0.5, lv, 40);
+    const r = rate(o.id, 0.5, lv, 12);
     console.log(
       (lab === "初始" ? o.name : "").padEnd(10) +
       lab.padEnd(12) +
@@ -84,7 +87,7 @@ console.log("\n=== 投币频率对达成率的影响（满配机台）===");
 for (const iv of [0.25, 0.5, 1.0, 1.4]) {
   const out = [];
   for (const o of D.ORDERS) {
-    const r = rate(o.id, iv, MAX, 20);
+    const r = rate(o.id, iv, MAX, 8);
     out.push(o.name + " " + (r.win / r.n * 100).toFixed(0) + "%");
   }
   console.log("投币 " + (1 / iv).toFixed(1) + "/秒 → " + out.join(" | "));

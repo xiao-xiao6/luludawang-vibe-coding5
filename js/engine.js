@@ -36,6 +36,16 @@
     if (!Number.isFinite(n)) return dflt;
     return Math.min(hi, Math.max(lo, Math.round(n)));
   }
+  /* 等级字段专用：**拒绝而不是夹取**（N4）。
+   * 夹取等于「把存档改成 999 就白拿满级」，那是发作弊券；
+   * 越界 / 非整数一律回落到默认值，改档只会把自己的进度清零。 */
+  function readLevel(v, max, dflt) {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n)) return dflt;
+    const r = Math.round(n);
+    if (r < 0 || r > max) return dflt;
+    return r;
+  }
   function clampNum(v, lo, hi, dflt) {
     const n = typeof v === "number" ? v : Number(v);
     if (!Number.isFinite(n)) return dflt;
@@ -778,6 +788,9 @@
     g.autoWorking = function () { return !!st.auto && g.autoLvl() > 0 && st.credits >= 1; };
     g.needBailout = function () { return st.credits < 1 && !g.autoWorking(); };
     g.bailout = function () {
+      /* N6：冷却对**所有**路径生效（旧版只挡自动路径，
+       * API 层面同帧连调可以连领 30×N）。冷却中就是一枚不发。 */
+      if (g.bailoutCd > 0) return 0;
       const grant = BAILOUT_GRANT;
       st.credits += grant;
       st.totals.bailouts++;
@@ -808,9 +821,16 @@
       return unlocked;
     };
 
-    /* ---------------- 主循环 ---------------- */
+    /* ---------------- 主循环 ----------------
+     * 暂停语义（N1）：**冻结一切游戏时钟**。
+     * paused 时推板、币、掉落结算、机台补给、订单倒计时、维护费、
+     * 超频 / 过热的剩余时间、救济金计时、游玩时长全部停摆 ——
+     * 「暂停 90 秒收益必须为 0」是自检 [2] 里的硬门禁。
+     * 只冻结仿真；粒子 / 出币飞行 / 数字滚动这些**纯表现层**
+     * 由 app.js 的渲染帧继续推进，暂停画面不会变成死屏。 */
     g.step = function (dt) {
       if (!(dt > 0)) return;
+      if (g.paused) return g.pending;
       dt = Math.min(dt, 0.05);
       st.totals.playTime += dt;
 
@@ -824,8 +844,7 @@
         }
       }
 
-      // 暂停推板：推板停住，台面上的币仍然继续求解（不会卡住、不会穿模）
-      world.step(dt, g.paused ? { freezePlate: true } : null);
+      world.step(dt);
       g.processEvents();
 
       pruneCombo(world.time);
@@ -967,9 +986,11 @@
       try { return g.fromJSON(JSON.parse(raw)); } catch (e) { return false; }
     };
 
-    /* 存档全字段校验：类型不对 / 超范围一律回落到默认值或夹紧。
-     * localStorage 是玩家可以随手改的，这既是健壮性也是反作弊 ——
-     * 不会再出现 credits = "abc" → NaN → 投币永不失败的无限白嫖（B6）。 */
+    /* 存档全字段校验：类型不对 / 越范围的策略——
+     *   · 货币与统计：非有限值 / 负数 / 超过安全上限 → 回落默认值；
+     *   · 等级字段：越界一律**整体拒绝**（回落 0），**不做夹取式白送**（N4）。
+     * 改存档不可能白拿满级，也不会再出现 credits = "abc" → NaN →
+     * 投币永不失败的无限白嫖（B6）。健壮性与反作弊在这里同时成立。 */
     g.fromJSON = function (obj) {
       if (!obj || typeof obj !== "object" || !obj.st || typeof obj.st !== "object") return false;
       const src = obj.st;
@@ -980,19 +1001,20 @@
       s.gems = clampInt(src.gems, 0, MAX_SAFE, s.gems);
       s.tickets = clampInt(src.tickets, 0, MAX_SAFE, s.tickets);
       s.auto = src.auto === true;
-      s.prestige = clampInt(src.prestige, 0, 999, 0);
+      /* 换台层数同理：越界拒绝（夹取等于把 1000 改成 999 白拿 ×201 收益） */
+      s.prestige = readLevel(src.prestige, 999, 0);
       s.modifier = (typeof src.modifier === "string" && D.modById(src.modifier).id === src.modifier)
         ? src.modifier : "plain";
 
       const ups = (src.upgrades && typeof src.upgrades === "object") ? src.upgrades : {};
       for (let i = 0; i < D.UPGRADES.length; i++) {
         const u = D.UPGRADES[i];
-        s.upgrades[u.id] = clampInt(ups[u.id], 0, u.max, 0);
+        s.upgrades[u.id] = readLevel(ups[u.id], u.max, 0);
       }
       const gups = (src.gemUpgrades && typeof src.gemUpgrades === "object") ? src.gemUpgrades : {};
       for (let i = 0; i < D.GEM_UPGRADES.length; i++) {
         const u = D.GEM_UPGRADES[i];
-        s.gemUpgrades[u.id] = clampInt(gups[u.id], 0, u.max, 0);
+        s.gemUpgrades[u.id] = readLevel(gups[u.id], u.max, 0);
       }
 
       const tsrc = (src.totals && typeof src.totals === "object") ? src.totals : {};

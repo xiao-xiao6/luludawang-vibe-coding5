@@ -143,7 +143,9 @@
       // 稀有奖励：露出越多，光晕 / 地面光环越强
       if (def.halo) Hero.drawAura(ctx, c, def, px, py, k, nowT);
 
-      Coin.drawCoin(ctx, def, px, py, k, st, sq, nowT);
+      // 同种币 3 档色温扰动（视觉 2）：按稳定编号分档，同一枚币永远同色，
+      // 但整片铜色不再是一个色 —— 币海的层次感与银币的可辨识度都回来了
+      Coin.drawCoin(ctx, def, px, py, k, st, sq, nowT, c.id % 3);
 
       // 一次性高光扫过（不是无限爆粒子）
       if (def.halo) Hero.drawSweep(ctx, c, def, px, py, k, nowT);
@@ -349,6 +351,8 @@
       elStageNote.textContent = (p.mode === "narrow" || p.mode === "compact")
         ? "点台面投币 · 拖动可瞄准" : "点击台面投币 · 空格也行";
     }
+    syncMuteBtn();   // 音效按钮形态跟着档位走（视觉 3）
+
     if (game) { refreshHud(true); render(); }
   }
 
@@ -377,8 +381,8 @@
   function idleTicker() {
     const m = game.modifierDef();
     const bits = ["机台 · " + m.name];
-    if (game.paused) bits.push("推板已暂停");
-    if (game.overheatT > 0) bits.push("过热 " + game.overheatT.toFixed(1) + "s");
+    if (game.paused) bits.push("已暂停（全部计时冻结）");
+    else if (game.overheatT > 0) bits.push("过热 " + game.overheatT.toFixed(1) + "s");
     if (game.congest > 0.02) bits.push("拥堵 " + Math.round(game.congest * 100) + "%");
     if (game.streakT > 0) bits.push("漏币中");
     if (game.orderOffering()) bits.push("有订单待接");
@@ -452,7 +456,7 @@
 
     setText(btnPause, game.paused ? "▶ 继续" : "⏸ 暂停");
     setAttr(btnPause, "aria-pressed", game.paused ? "true" : "false");
-    setAttr(btnPause, "title", "暂停/继续推板（快捷键 P）");
+    setAttr(btnPause, "title", "暂停 / 继续：冻结整局游戏（推板、订单、维护费、超频、补给全部停表，快捷键 P）");
 
     // 救济金按钮：只在真的走投无路时出现
     setBool(btnBailout, "hidden", !game.needBailout());
@@ -465,16 +469,21 @@
     setBool(btnHot, "disabled", !hotReady);
     setAttr(btnHot, "aria-pressed", game.hotActive() ? "true" : "false");
 
-    // 容量条
+    // 容量条：变色线与拥堵阈值读同一份数据（N3），
+    // 不再出现“黄色警告区里已经被扣速度”的错位。
     const w = game.world;
     const ratio = Math.min(1, w.coins.length / w.maxCoins);
-    const lvl = ratio > 0.9 ? "red" : ratio > 0.7 ? "warn" : "ok";
+    const warnR = D.CONGESTION.warn;
+    const redR = Math.max(0.96, Math.min(0.99, warnR + 0.06));
+    const lvl = ratio >= redR ? "red" : ratio >= warnR ? "warn" : "ok";
     setText(elCapText, w.coins.length + "/" + w.maxCoins);
     if (hudPrev.capFill !== ratio) {
       hudPrev.capFill = ratio;
       elCapFill.style.width = (ratio * 100).toFixed(1) + "%";
     }
     setClass(elCap, "capLvl", "cap " + lvl);
+    setAttr(elCap, "title", "台面容量：超过 " + Math.round(warnR * 100) + "% 进入拥堵（推板减速），"
+      + Math.round(redR * 100) + "% 以上满台硬塞会爆仓");
 
     // 状态 chips：把"正在被惩罚"这件事显式告诉玩家
     setBool(chipCongest, "hidden", game.congest <= 0.02);
@@ -482,11 +491,13 @@
     setBool(chipStreak, "hidden", game.streakT <= 0);
     setBool(chipOverheat, "hidden", game.overheatT <= 0);
     if (game.overheatT > 0) setText(chipOverheat, "过热 " + game.overheatT.toFixed(1) + "s");
-    /* 机台维护费：**真正的惩罚机制**，必须常驻可见 ——
-     * 否则玩家只会觉得「钱一直在涨」，看不到任何成本。 */
+    /* 机台维护费 chip（视觉 4：不再从开局就挂黄色警示）：
+     * 金额低于 5 ◎/次时降为中性灰（Lv0 的 1 ◎ 不值得天天“狼来了”），
+     * 达到阈值才升为琥珀警示 —— 成本真的咬人时才亮警示色。 */
     const upkeep = game.maintenanceCost();
     setBool(chipUpkeep, "hidden", upkeep <= 0);
     if (upkeep > 0) {
+      setClass(chipUpkeep, "upkeepLvl", upkeep >= 5 ? "chip warn" : "chip");
       setText(chipUpkeep, "维护 −" + D.fmt(upkeep) + "/" + D.MAINTENANCE.every + "s");
       setAttr(chipUpkeep, "title",
         "机台维护费：每 " + D.MAINTENANCE.every + "s 扣 " + D.fmt(upkeep) + " ◎（升级越多 / 换台越高越贵）\n" +
@@ -704,7 +715,7 @@
         toast("换机台 · " + m.name, "win", "🎰");
         ticker(idleTicker(), false);
       } else if (e.type === "pause") {
-        log(e.paused ? "推板已暂停" : "推板继续运行", "sys");
+        log(e.paused ? "已暂停：推板 / 订单 / 维护费 / 超频全部冻结" : "继续运行", "sys");
         ticker(idleTicker(), false);
       } else if (e.type === "deny") {
         throttledDeny();
@@ -765,7 +776,7 @@
     Hero.update(w, dt);
     Chute.update(dt);
     Payout.update(dt);
-    machineShake = Math.min(2.5, Math.abs(w.plate.vy) / 150);
+    machineShake = game.paused ? 0 : Math.min(2.5, Math.abs(w.plate.vy) / 150);
     pruneAcc += dt;
     if (pruneAcc > 2) { pruneAcc = 0; Pile.prune(w); Hero.prune(w); }
     tickCredits(dt);
@@ -868,7 +879,9 @@
   function syncMuteBtn() {
     const on = Sfx.isOn();
     btnMute.setAttribute("aria-pressed", on ? "true" : "false");
-    btnMute.textContent = on ? "🔊 音效" : "🔇 静音";
+    // 视觉 3：compact 档右列空间窄，音效收成纯图标，不再孤行掉队
+
+    btnMute.textContent = on ? (mode === "compact" ? "🔊" : "🔊 音效") : (mode === "compact" ? "🔇" : "🔇 静音");
     btnMute.title = on ? "音效已开启，点击静音" : "音效已静音，点击开启";
   }
   btnMute.addEventListener("click", () => {
@@ -1119,12 +1132,12 @@
       '<div class="desc">点击台面任意位置投币，币会落到推板前方。<br>' +
       "推板往复把币往前推，掉进最前方的出币口就是收益，掉进左右两角的黑槽会丢币。<br>" +
       "连续推落会累积连击倍率；宝箱触发 JACKPOT，金币塔是更稀有的大奖。<br>" +
-      "<b>惩罚线</b>：台面超过 80% 会拥堵（推板变慢），满台还硬塞会爆仓；连续掉沟会触发漏币连锁。<br>" +
+      "<b>惩罚线</b>：台面超过 " + Math.round(D.CONGESTION.warn * 100) + "% 会拥堵（推板变慢），满台还硬塞会爆仓；连续掉沟会触发漏币连锁。<br>" +
       "<b>成本线</b>：机台每 " + D.MAINTENANCE.every + "s 收维护费，每笔收益还被抽走 " +
       Math.round(D.MAINTENANCE.rake * 100) + "% —— 躺着不推币是会亏钱的。<br>" +
       "<b>风险线</b>：机台会不定时给出限时订单，接下并达标拿重赏，失败要罚金 + 过热。<br>" +
       "金币见底时机台会自动赠送救济金，也可以点「领救济金」立刻领取。<br>" +
-      "快捷键：空格投币 / A 自动 / H 超频 / L 抽奖 / P 暂停推板 / Esc 关闭面板。</div></div>";
+      "快捷键：空格投币 / A 自动 / H 超频 / L 抽奖 / P 暂停继续（冻结全局） / Esc 关闭面板。</div></div>";
     return h;
   }
 

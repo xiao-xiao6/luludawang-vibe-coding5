@@ -8,6 +8,17 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const os = require("os");
+
+/* N5：不再把 Chrome 用户配置写进 _test/_shots/_profile*（会积出整个浏览器的
+ * 缓存 / History / Cookies）。每次跑新建一次性临时 profile，进程退出即删。 */
+let profileDir = null;
+function dropProfile() {
+  if (!profileDir) return;
+  try { fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 2 }); } catch (e) { }
+  profileDir = null;
+}
+process.on("exit", dropProfile);
 
 const ROOT = path.join(__dirname, "..");
 const OUT = path.join(__dirname, "_shots");
@@ -149,7 +160,8 @@ const VIEWPORTS = [
   if (!browser) { console.log("没有可用浏览器，跳过"); process.exit(0); }
   if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true });
   const srv = await serve();
-  const userDir = path.join(OUT, "_profile_layout");
+  profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "cp-probe-layout-"));
+  const userDir = profileDir;   // 每次全新，用完即删（N5）
   const args = [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     "--remote-debugging-port=9352", "--user-data-dir=" + userDir,
@@ -264,6 +276,7 @@ const VIEWPORTS = [
   console.log("=".repeat(60));
 
   try { proc.kill(); } catch (e) { }
+  dropProfile();
   srv.close();
   process.exit(problems.length ? 1 : 0);
 })().catch((e) => { console.error("探针自身出错：", e); process.exit(2); });

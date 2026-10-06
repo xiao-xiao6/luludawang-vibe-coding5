@@ -7,6 +7,17 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const os = require("os");
+
+/* N5：不再把 Chrome 用户配置写进 _test/_shots/_profile*（会积出整个浏览器的
+ * 缓存 / History / Cookies）。每次跑新建一次性临时 profile，进程退出即删。 */
+let profileDir = null;
+function dropProfile() {
+  if (!profileDir) return;
+  try { fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 2 }); } catch (e) { }
+  profileDir = null;
+}
+process.on("exit", dropProfile);
 
 const ROOT = path.join(__dirname, "..");
 const OUT = path.join(__dirname, "_shots");
@@ -149,7 +160,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true });
 
   const srv = await serve();
-  const userDir = path.join(OUT, "_profile");
+  profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "cp-browser-smoke-"));
+  const userDir = profileDir;   // 每次全新，用完即删（N5）
   const args = [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     "--remote-debugging-port=9333", "--user-data-dir=" + userDir,
@@ -219,6 +231,40 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     String(await evalJS("window.__CP.game.world.coins.length")));
   ok(await evalJS("document.body.dataset.mode.length > 0"), "适配档位已写入 body",
     String(await evalJS("document.body.dataset.mode")));
+
+  // N2 回归：HUD 的“+N”结算链路两端都真实存在（旧版 addDelta 找的 #dCoin 根本没进 DOM）
+  ok(await evalJS("!!document.getElementById('dCoin')"), "N2：HUD 金币 pill 旁的 #dCoin 存在");
+  const dDelta = await evalJS(`(function(){
+    var d = document.getElementById('dCoin');
+    var cs = getComputedStyle(d);
+    var pill = d.closest('.cur');
+    var wBefore = pill.getBoundingClientRect().width;
+    d.textContent = '+123';
+    d.classList.add('on');
+    var wAfter = pill.getBoundingClientRect().width;
+    return { pos: cs.position, opacity: parseFloat(cs.opacity), grow: Math.round(wAfter - wBefore) };
+  })()`);
+  ok(dDelta && dDelta.pos === "absolute" && dDelta.grow === 0,
+    "N2：飘字绝对定位，出现时不撑开 pill", JSON.stringify(dDelta));
+  // 视觉 1：hud-left / hud-right 已拆平成单流式行（display:contents）
+  ok(await evalJS("getComputedStyle(document.querySelector('.hud-left')).display === 'contents'"),
+    "视觉 1：HUD 两组按钮合并为一个流式行");
+  const hudRows = await evalJS(`(function(){
+    var acts = document.querySelector('.hud-actions');
+    var cys = [];
+    acts.querySelectorAll('.cap,.chip:not([hidden]),button').forEach(function(e){
+      var cs = getComputedStyle(e);
+      if (cs.display === 'none') return;
+      var r = e.getBoundingClientRect();
+      cys.push(r.top + r.height / 2);
+    });
+    cys.sort(function(a, b){ return a - b; });
+    var rows = 1;
+    for (var i = 1; i < cys.length; i++) { if (cys[i] - cys[i - 1] > 15) rows++; }
+    return { rows: rows, items: cys.length };
+  })()`);
+  ok(hudRows && hudRows.rows <= 2, "视觉 1：HUD 操作区不再出现整行死空间",
+    "占据 " + hudRows.rows + " 行 / " + hudRows.items + " 个元素");
   ok(await evalJS("document.getElementById('cv').width > 0"), "canvas backing store 已设定",
     (await evalJS("document.getElementById('cv').width")) + "×" + (await evalJS("document.getElementById('cv').height")));
 
@@ -226,6 +272,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(4000);
   ok(await evalJS("window.__CP.game.world.time > 3"), "游戏主循环在推进",
     "time=" + (await evalJS("window.__CP.game.world.time.toFixed(1)")));
+
+  // N1 行为验证：HUD 暂停键 → 仿真时钟真的停摆，解除后恢复
+  await evalJS("document.getElementById('btnPause').click()");
+  const tFrozen = await evalJS("window.__CP.game.world.time");
+  ok(await evalJS("document.getElementById('btnPause').textContent.indexOf('继续') >= 0"),
+    "N1：暂停按钮切到「继续」态");
+  await sleep(1000);
+  ok(await evalJS("window.__CP.game.world.time === (" + JSON.stringify(tFrozen) + ")"),
+    "N1：暂停期间仿真时钟停摆（浏览器真链路）", String(tFrozen));
+  await evalJS("document.getElementById('btnPause').click()");
+  await sleep(700);
+  ok(await evalJS("window.__CP.game.world.time > (" + JSON.stringify(tFrozen) + ")"),
+    "N1：解除暂停后仿真恢复推进");
 
   // 模拟投币
   const before = await evalJS("window.__CP.game.st.totals.dropped");
@@ -332,6 +391,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     g.streakT = 5; g.overheatT = 5;
     while (g.world.coins.length < g.world.maxCoins) g.world.drop(CPData.COIN_DEFS.copper, 240);
     g.updateCongestion();
+    // 冻结仿真再验收 chip：否则 260 枚满台会在 sleep 期间被推板排空，拥堵值闪烁导致假阴性
+    g.setPaused(true);
   })()`);
   await sleep(500);
   ok(await evalJS("getComputedStyle(document.getElementById('streakChip')).display !== 'none'"),
@@ -341,6 +402,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ok(await evalJS("getComputedStyle(document.getElementById('congestChip')).display !== 'none'"),
     "拥堵 chip 会真的显示出来",
     String(await evalJS("document.getElementById('congestChip').textContent")));
+  // 验收完把仿真放回运行态：后面的超频/截图需要一台正常跑的机台
+  await evalJS("window.__CP.game.setPaused(false);");
+  await sleep(200);
 
   // 超频激活时按钮状态
   await evalJS("window.__CP.game.st.credits = 1e6; window.__CP.game.useHot();");
@@ -386,6 +450,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log("=".repeat(58));
 
   try { proc.kill(); } catch (e) { }
+  dropProfile();
   srv.close();
   process.exit(bad === 0 ? 0 : 1);
 })().catch((e) => { console.error("冒烟脚本自身出错：", e); process.exit(2); });

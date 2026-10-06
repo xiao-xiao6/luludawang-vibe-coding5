@@ -7,6 +7,17 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const os = require("os");
+
+/* N5：不再把 Chrome 用户配置写进 _test/_shots/_profile*（会积出整个浏览器的
+ * 缓存 / History / Cookies）。每次跑新建一次性临时 profile，进程退出即删。 */
+let profileDir = null;
+function dropProfile() {
+  if (!profileDir) return;
+  try { fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 2 }); } catch (e) { }
+  profileDir = null;
+}
+process.on("exit", dropProfile);
 
 const ROOT = path.join(__dirname, "..");
 const OUT = path.join(__dirname, "_shots");
@@ -123,7 +134,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   if (!browser) { console.log("没有可用浏览器，跳过"); process.exit(0); }
   if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true });
   const srv = await serve();
-  const userDir = path.join(OUT, "_profile_aim2");
+  profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "cp-probe-aim2-"));
+  const userDir = profileDir;   // 每次全新，用完即删（N5）
   const args = [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     "--remote-debugging-port=9354", "--user-data-dir=" + userDir,
@@ -160,10 +172,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     var y = g.world.dropZone.yMid;
     var out = [];
 
-    // 记录实际落点：拦截 world.drop
-    var origDrop = g.world.drop.bind(g.world);
+    // 记录真实反投影值：拦截 g.insert 的入参（引擎内部再往 cx 上叠加 ±4px 物理抖动，
+    // 那个抖动不是点击误差 —— 旧版拦 world.drop 把抖动算进误差，门禁永远随机红）
+    var origInsert = g.insert.bind(g);
     var lastX = null;
-    g.world.drop = function(def, x, opt){ lastX = x; return origDrop(def, x, opt); };
+    g.insert = function(x){ lastX = x; return origInsert(x); };
 
     [60, 120, 240, 360, 420].forEach(function(bx){
       // 台面 x → 屏幕坐标（走真实投影）
@@ -178,7 +191,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                  err: lastX == null ? null : +(lastX - bx).toFixed(2) });
     });
 
-    g.world.drop = origDrop;
+    g.insert = origInsert;
     return { viewport: P.getViewport(), tests: out };
   })()`);
 
@@ -189,6 +202,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   }
 
   try { proc.kill(); } catch (e) { }
+  dropProfile();
   srv.close();
   process.exit(0);
 })().catch((e) => { console.error("探针自身出错：", e); process.exit(2); });

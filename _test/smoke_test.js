@@ -80,24 +80,10 @@ head("[1] 物理稳定性");
   ok(w2.coins.length <= w2.maxCoins, "容量上限生效", w2.coins.length + "/" + w2.maxCoins);
   const over = w2.drop(D.COIN_DEFS.copper, 240);
   ok(over === null, "满台时投币被拒绝");
-
-  // 暂停推板：推板停住，但币仍然继续求解（不卡死、不穿模）
-  const w3 = new P.World({ rng: D.makeRng(9) });
-  for (let i = 0; i < 60; i++) w3.drop(D.COIN_DEFS.copper, 240, { y: 200 });
-  for (let i = 0; i < 240; i++) w3.step(1 / 120);
-  const frozenY = w3.plate.y;
-  let frozenNan = 0;
-  for (let i = 0; i < 600; i++) {
-    w3.step(1 / 120, { freezePlate: true });
-    for (const c of w3.coins) if (!finite(c.x) || !finite(c.y)) frozenNan++;
-  }
-  ok(Math.abs(w3.plate.y - frozenY) < 1e-9, "暂停时推板停住", "y " + w3.plate.y.toFixed(3));
-  ok(frozenNan === 0, "暂停期间币仍正常求解（无 NaN）");
-  ok(w3.worstPlatePenetration() < 0.01, "暂停期间无推板穿透");
 }
 
 /* ---------------- 2. 无挂机白拿 ---------------- */
-head("[2] 挂机不产生收益（推板才是唯一动力）");
+head("[2] 挂机 / 暂停都不产生收益（推板 + 玩家投入才是唯一动力）");
 {
   const g = newGame();
   g.seedField(170, 2);
@@ -110,7 +96,64 @@ head("[2] 挂机不产生收益（推板才是唯一动力）");
     for (const e of evts) if (e.type === "pay") paid++;
   }
   const idleGain = g.st.credits - before;
-  ok(idleGain < 25, "90 秒纯挂机收益可忽略", "收益 " + idleGain + " ◎ / 掉出 " + paid + " 枚");
+  ok(idleGain < 25, "90 秒纯挂机（Lv0）收益可忽略", "收益 " + idleGain + " ◎ / 掉出 " + paid + " 枚");
+
+  /* N1 回归门禁：暂停 = 冻结一切游戏时钟。
+   * 旧版暂停只冻推板，满级行程下补给照常撒币 —— 币自带初速被拱过出币口，
+   * 实测暂停 60 秒白赚 92 ◎ + 一次 JACKPOT，订单还在暂停里倒计时并判负。
+   * 现在：收益严格为 0，补给 / 订单 / 维护费 / 超频 buff / 仿真时钟全部停摆。 */
+  const gp = newGame(777);
+  gp.st.upgrades = { speed: 6, reach: 6, slick: 5, multi: 4, luck: 6, rail: 5, cap: 4 };
+  gp.applyUpgrades();
+  gp.st.credits = 1e9;
+  gp.seedField(170, 2);
+  let tp = 0;
+  for (let i = 0; i < 60 * 30; i++) {           // 先跑 30 秒，把台面与推板行程拉进危险区
+    tp += 1 / 60;
+    if (tp >= 0.3) { tp = 0; gp.insert(240); }
+    gp.step(1 / 60);
+    gp.drainPending();
+  }
+  gp.st.credits = 1e9;
+  gp.offerOrder(); gp.acceptOrder();             // 一个进行中的订单
+  gp.useHot(); gp.drainPending();                // 一个生效中的超频 buff
+  ok(gp.order && gp.order.phase === "active" && gp.hotT > 0, "门禁前提：确有进行中订单与超频 buff",
+    "订单 " + (gp.order ? gp.order.t.toFixed(1) : "-") + "s / 超频 " + gp.hotT.toFixed(1) + "s");
+  const snap = {
+    plate: gp.world.plate.y, coins: gp.world.coins.length, time: gp.world.time,
+    credits: gp.st.credits, earned: gp.st.totals.earned, paid: gp.st.totals.paid,
+    orderT: gp.order ? gp.order.t : -1, orderProg: gp.order ? gp.order.prog : -1,
+    hot: gp.hotT, hotCd: gp.hotCd, play: gp.st.totals.playTime, upkeep: gp.st.totals.upkeep
+  };
+  gp.setPaused(true);
+  let pausePayEvt = 0;
+  for (let i = 0; i < 60 * 90; i++) {
+    gp.step(1 / 60);
+    for (const e of gp.drainPending()) if (e.type === "pay") pausePayEvt++;
+  }
+  ok(pausePayEvt === 0, "N1：暂停 90 秒期间 0 个 pay 事件", "pay " + pausePayEvt);
+  ok(gp.st.totals.earned === snap.earned, "N1：暂停 90 秒收益严格为 0（满级行程 + 补给路径）",
+    "Δ收益 " + (gp.st.totals.earned - snap.earned));
+  ok(gp.st.credits === snap.credits, "N1：暂停期间维护费不扣钱", "Δ金币 " + (gp.st.credits - snap.credits));
+  ok(gp.st.totals.upkeep === snap.upkeep, "N1：暂停期间不产生维护费结算");
+  ok(gp.world.coins.length === snap.coins, "N1：暂停期间补给不撒币",
+    "Δ币 " + (gp.world.coins.length - snap.coins));
+  ok(gp.world.plate.y === snap.plate, "N1：暂停期间推板冻结");
+  ok(gp.world.time === snap.time, "N1：暂停期间仿真时钟停摆");
+  ok(gp.order && gp.order.t === snap.orderT && gp.order.prog === snap.orderProg,
+    "N1：暂停期间订单不倒计时（不会被暂停罚掉）");
+  ok(gp.hotT === snap.hot && gp.hotCd === snap.hotCd, "N1：暂停期间超频 buff / 冷却不烧掉",
+    "hot " + gp.hotT.toFixed(1) + "s / cd " + gp.hotCd.toFixed(1) + "s");
+  ok(gp.st.totals.playTime === snap.play, "N1：暂停不计入游玩时长");
+  gp.setPaused(false);
+  let resumePay = 0;
+  for (let i = 0; i < 60 * 20; i++) {
+    if (i % 18 === 0) gp.insert(240);
+    gp.step(1 / 60);
+    for (const e of gp.drainPending()) if (e.type === "pay") resumePay++;
+  }
+  ok(resumePay > 0, "取消暂停后机台照常开工", "恢复 20 秒掉出 " + resumePay + " 枚");
+  ok(gp.world.time > snap.time, "恢复后仿真时钟继续推进");
 }
 
 /* ---------------- 3. 经济：投币与收益 ---------------- */
@@ -378,13 +421,14 @@ head("[6] 存档读写");
   ok(g2.fromJSON({ st: {} }) === true, "极简存档可容错载入");
   ok(finite(g2.st.credits), "容错载入后金币合法", String(g2.st.credits));
 
-  // B6 回归：损坏存档不能造出 NaN 金币 → 无限白嫖
+  // B6 / N4 回归：损坏存档不能造出 NaN 金币；等级越界是**拒绝**而不是夹取
   const k = newGame();
-  k.fromJSON({ st: { credits: "abc", gems: null, tickets: {}, upgrades: { speed: 999 }, totals: { earned: -5 } } });
+  k.fromJSON({ st: { credits: "abc", gems: null, tickets: {}, upgrades: { speed: 999 }, gemUpgrades: { crit: 99 }, totals: { earned: -5 } } });
   ok(finite(k.st.credits), "B6：字符串金币被拦下", String(k.st.credits));
   ok(k.st.credits === 120, "B6：非法金币回落默认值", String(k.st.credits));
   ok(finite(k.st.gems) && finite(k.st.tickets), "B6：钻石/券都被校正", k.st.gems + "/" + k.st.tickets);
-  ok(k.upLevel("speed") === 6, "B6：越界升级等级被夹到上限", "Lv" + k.upLevel("speed"));
+  ok(k.upLevel("speed") === 0, "N4：越界升级被整体拒绝（改 999 不白送满级）", "Lv" + k.upLevel("speed"));
+  ok(k.gemLevel("crit") === 0, "N4：越界钻石升级同样拒绝", "Lv" + k.gemLevel("crit"));
   ok(k.st.totals.earned === 0, "B6：负数统计被归零", String(k.st.totals.earned));
   const r1 = k.insert(240), r2 = k.insert(240), r3 = k.insert(240);
   ok(r1 === 1 && r2 === 1 && r3 === 1, "B6：损坏档下投币行为正常（不再无限白嫖）", [r1, r2, r3].join(","));
@@ -634,6 +678,8 @@ head("[10] 破产保护 / 换机台 / 音效状态机");
   ok(gManual.needBailout() === true, "破产时可手动领救济金");
   const grant = gManual.bailout();
   ok(grant > 0 && gManual.st.credits === grant, "手动领取到账", "+" + grant);
+  ok(gManual.bailout() === 0, "N6：冷却期内再领直接拒绝（API 层连发也拿不到双份）",
+    "第二次返回 " + gManual.bailout());
 
   // B9 回归：Lv0 打开自动投币不该屏蔽救济金
   const gAuto = newGame(12);

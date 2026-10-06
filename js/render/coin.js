@@ -14,7 +14,34 @@
   const P = root.CPProject;
 
   let dpr = 1;
-  const faces = {}, halos = {}, rings = {}, strips = {};
+  const faces = {}, halos = {}, rings = {}, strips = {}, tints = {};
+
+  /* ---------------- 同种币色温扰动（视觉 2：币海可读性） ----------------
+   * 旧问题：180 枚同种币共用一张烘焙精灵，整片铜色/银色的圆片没有层次，
+   * 银币混在铜币堆里不细看分辨不出。
+   * 现在：disc 类币每枚按稳定编号分到 3 档色温精灵（原色 / 暖 / 冷，
+   * 扰动幅度只有 7~9%，是同种币而不是另一种币）；银币另外加冷色反光描边。
+   * 只影响精灵缓存，不影响物理与结算 —— 平衡表数字一个都不会动。 */
+  const TINT_WARM = "#ffd9a0", TINT_COOL = "#bcd8ff";
+  function mixHex(a, b, t) {
+    const ar = parseInt(a.slice(1, 3), 16), ag = parseInt(a.slice(3, 5), 16), ab = parseInt(a.slice(5, 7), 16);
+    const br = parseInt(b.slice(1, 3), 16), bg = parseInt(b.slice(3, 5), 16), bb = parseInt(b.slice(5, 7), 16);
+    const h = (x) => Math.round(x).toString(16).padStart(2, "0");
+    return "#" + h(ar + (br - ar) * t) + h(ag + (bg - ag) * t) + h(ab + (bb - ab) * t);
+  }
+  function tintDef(def, v) {
+    const key = def.id + "#" + v;
+    if (tints[key]) return tints[key];
+    const target = v === 1 ? TINT_WARM : TINT_COOL;
+    const t = v === 1 ? 0.07 : 0.09;
+    const d = Object.assign({}, def, {
+      color: mixHex(def.color, target, t),
+      color2: mixHex(def.color2, target, t * 0.8),
+      ring: mixHex(def.ring, target, t)
+    });
+    tints[key] = d;
+    return d;
+  }
 
   function setDpr(d) {
     if (d === dpr) return;
@@ -26,6 +53,7 @@
     for (const k in halos) delete halos[k];
     for (const k in rings) delete rings[k];
     for (const k in strips) delete strips[k];
+    for (const k in tints) delete tints[k];
   }
 
   function newCv(w, h) {
@@ -234,14 +262,19 @@
     return { canvas: o.c, size: size, art: "tower" };
   }
 
-  function face(def) {
-    if (faces[def.id]) return faces[def.id];
+  function face(def, v) {
+    /* v = 0/1/2 三档色温；只有普通圆片参与扰动，
+     * 稀有奖励（gem/chest/tower）本来就要“独一无二”，不变色。 */
+    const variant = def.art === "disc" ? ((v | 0) % 3) : 0;
+    const key = def.id + "@" + variant;
+    if (faces[key]) return faces[key];
+    const d = variant ? tintDef(def, variant) : def;
     let sp;
-    if (def.art === "gem") sp = buildGem(def);
-    else if (def.art === "chest") sp = buildChest(def);
-    else if (def.art === "tower") sp = buildTower(def);
-    else sp = buildDisc(def);
-    faces[def.id] = sp;
+    if (d.art === "gem") sp = buildGem(d);
+    else if (d.art === "chest") sp = buildChest(d);
+    else if (d.art === "tower") sp = buildTower(d);
+    else sp = buildDisc(d);
+    faces[key] = sp;
     return sp;
   }
 
@@ -319,8 +352,8 @@
     const f = sp.ratio || 1;
     ctx.drawImage(sp.canvas, -rx * f, -ry * f, rx * 2 * f, ry * 2 * f);
 
-    // 下沿亮弧：把"金属"钉死
-    ctx.strokeStyle = "rgba(255,255,255,.34)";
+    // 下沿亮弧：把"金属"钉死；银币用冷色反光，从铜色海洋里跳出来（视觉 2）
+    ctx.strokeStyle = def.id === "silver" ? "rgba(190,225,255,.55)" : "rgba(255,255,255,.34)";
     ctx.lineWidth = Math.max(0.6, sc * 0.7);
     ctx.beginPath(); ctx.ellipse(0, 0, rx * 0.97, ry * 0.97, 0, Math.PI * 0.12, Math.PI * 0.88); ctx.stroke();
   }
@@ -337,9 +370,10 @@
    * 画一枚币。
    * @param {object} st  视觉状态（CPPile 提供）：flip / tilt / seed
    * @param {number} sq  落地压扁（0~1）
+   * @param {number} [v] 色温扰动档位（0/1/2，只有普通圆片参与）
    */
-  function drawCoin(ctx, def, sx, sy, sc, st, sq, nowT) {
-    const sp = face(def);
+  function drawCoin(ctx, def, sx, sy, sc, st, sq, nowT, v) {
+    const sp = face(def, v);
     ctx.save();
     ctx.translate(sx, sy);
     if (def.art === "disc") {

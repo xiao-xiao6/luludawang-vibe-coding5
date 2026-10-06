@@ -151,23 +151,18 @@
     }
 
     /* 单个物理步（固定步长调用）
-     * opts.freezePlate = true 时推板停在原地（"暂停推板"用），
-     * 台面上的币仍然继续求解，不会卡住。 */
-    step(dt, opts) {
+     * 注：暂停不在这里实现 —— 引擎级暂停（g.paused）会直接不调用 step()，
+     * 冻结的是整局仿真（推板 + 币 + 结算），语义唯一、可预期（N1）。 */
+    step(dt) {
       if (!(dt > 0)) return;
-      const freeze = !!(opts && opts.freezePlate);
       this.time += dt;
 
       const p = this.plate;
-      if (freeze) {
-        p.vy = 0;
-      } else {
-        const prevY = p.y;
-        this.phase += dt * this.omega * this.speedMul * this.congestMul * this.hotMul;
-        const s = 0.5 - 0.5 * Math.cos(this.phase);
-        p.y = p.minY + (p.maxY - p.minY) * this.reachMul * s;
-        p.vy = (p.y - prevY) / dt;
-      }
+      const prevY = p.y;
+      this.phase += dt * this.omega * this.speedMul * this.congestMul * this.hotMul;
+      const s = 0.5 - 0.5 * Math.cos(this.phase);
+      p.y = p.minY + (p.maxY - p.minY) * this.reachMul * s;
+      p.vy = (p.y - prevY) / dt;
 
       const damp = Math.exp(-this.baseFriction * this.frictionMul * dt);
       const spinDamp = Math.exp(-3 * dt);
